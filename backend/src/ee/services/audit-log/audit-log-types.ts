@@ -5760,6 +5760,7 @@ interface SecretScanningResourceAddEvent {
   metadata: {
     type: SecretScanningDataSource;
     dataSourceId: string;
+    dataSourceName: string;
     resources: { resourceId: string; resourceName: string }[];
   };
 }
@@ -5769,6 +5770,7 @@ interface SecretScanningResourceRemoveEvent {
   metadata: {
     type: SecretScanningDataSource;
     dataSourceId: string;
+    dataSourceName: string;
     resourceId: string;
     resourceName: string;
   };
