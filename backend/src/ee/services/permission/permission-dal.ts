@@ -221,8 +221,7 @@ export const permissionDALFactory = (db: TDbClient): TPermissionDALFactory => {
         .where(`${TableName.IdentityGroupMembership}.identityId`, actorId)
         .select(db.ref("id").withSchema(TableName.Groups));
 
-      const docs = await (tx || db)
-        .replicaNode()(TableName.Membership)
+      const docs = await (tx || db.replicaNode())(TableName.Membership)
         .join(TableName.MembershipRole, `${TableName.Membership}.id`, `${TableName.MembershipRole}.membershipId`)
         .join(TableName.Organization, `${TableName.Membership}.scopeOrgId`, `${TableName.Organization}.id`)
         .leftJoin(TableName.Role, `${TableName.MembershipRole}.customRoleId`, `${TableName.Role}.id`)

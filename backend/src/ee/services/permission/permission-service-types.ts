@@ -1,5 +1,6 @@
 import { MongoAbility, RawRuleOf } from "@casl/ability";
 import { PackRule } from "@casl/ability/extra";
+import type { Knex } from "knex";
 import { MongoQuery } from "@ucast/mongo2js";
 
 import { ActionProjectType, OrganizationActionScope, ResourceType, TMemberships } from "@app/db/schemas";
@@ -27,6 +28,8 @@ export type TGetServiceTokenProjectPermissionArg = {
 };
 
 export type TGetProjectPermissionArg = {
+  /** Internal read-only snapshot handle; never populated from request data. */
+  snapshotTx?: Knex.Transaction;
   actor: ActorType;
   actorId: string;
   projectId: string;
@@ -77,6 +80,8 @@ export type TPermissionAuditSource = {
 };
 
 export type TGetOrgPermissionArg = {
+  /** Internal read-only snapshot handle; never populated from request data. */
+  snapshotTx?: Knex.Transaction;
   actor: ActorType;
   actorId: string;
   orgId: string;

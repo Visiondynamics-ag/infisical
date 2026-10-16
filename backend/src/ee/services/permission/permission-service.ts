@@ -1,5 +1,6 @@
 import { createMongoAbility, ForbiddenError, MongoAbility, RawRuleOf, subject } from "@casl/ability";
 import { PackRule, packRules, unpackRules } from "@casl/ability/extra";
+import type { Knex } from "knex";
 import { requestContext } from "@fastify/request-context";
 
 import {
@@ -11,6 +12,7 @@ import {
   ResourceMembershipRole,
   ResourceType,
   ServiceTokenScopes,
+  TableName,
   TProjects
 } from "@app/db/schemas";
 import { TGroupDALFactory } from "@app/ee/services/group/group-dal";
@@ -85,6 +87,8 @@ import {
 // Returns the delegated OAuth scopes for the current request, or undefined when this is not an
 // OAuth-delegated request. The distinction matters: a returned array (even empty) means scope
 // narrowing applies, while undefined means a first-party session / background job is untouched.
+type TPermissionProject = Pick<TProjects, "id" | "orgId" | "type" | "name" | "slug" | "enforceEncryptedSecretManagerSecretMetadata">;
+
 const getDelegatedOauthScopes = (): OauthScope[] | undefined => {
   const raw = requestContext.get(RequestContextKey.OauthScopes);
   if (!raw) return undefined;
@@ -272,7 +276,8 @@ export const permissionServiceFactory = ({
     orgId,
     actorOrgId,
     scope,
-    actorAuthMethod
+    actorAuthMethod,
+    snapshotTx
   }) => {
     if (actor !== ActorType.USER && actor !== ActorType.IDENTITY) {
       throw new BadRequestError({
@@ -287,6 +292,8 @@ export const permissionServiceFactory = ({
       });
     }
 
+    if (snapshotTx && (!snapshotTx.isTransaction || actor !== ActorType.USER)) throw new ForbiddenRequestError({ message: "Snapshot transaction required" });
+
     // Request-scoped memoization: deduplicates org permission checks within the same request
     const memoKey = requestMemoKeys.orgPermission({
       orgId,
@@ -295,14 +302,15 @@ export const permissionServiceFactory = ({
       actorAuthMethod,
       scope
     });
-    return requestMemoize(memoKey, async () => {
+    const loadOrgPermission = async () => {
       const permissionData = await permissionDAL.getPermission({
         scopeData: {
           scope: AccessScope.Organization,
           orgId
         },
         actorId,
-        actorType: actor
+        actorType: actor,
+        tx: snapshotTx
       });
       if (!permissionData?.length)
         throw new ForbiddenRequestError({
@@ -352,10 +360,11 @@ export const permissionServiceFactory = ({
         memberships: permissionData,
         hasRole
       };
-    });
+    };
+    return snapshotTx ? loadOrgPermission() : requestMemoize(memoKey, loadOrgPermission);
   };
 
-  const $checkProjectEnforcement = (projectDetails: TProjects) => {
+  const $checkProjectEnforcement = (projectDetails: Pick<TProjects, "enforceEncryptedSecretManagerSecretMetadata">) => {
     return (enforcement: "enforceEncryptedSecretManagerSecretMetadata") => {
       if (enforcement === "enforceEncryptedSecretManagerSecretMetadata") {
         return Boolean(projectDetails.enforceEncryptedSecretManagerSecretMetadata);
@@ -428,7 +437,7 @@ export const permissionServiceFactory = ({
 
   type TCachedProjectPermission = {
     permissionData: Awaited<ReturnType<TPermissionDALFactory["getPermission"]>>;
-    projectDetails: TProjects;
+    projectDetails: TPermissionProject;
     username: string;
     canBypassSso: boolean;
   };
@@ -438,11 +447,13 @@ export const permissionServiceFactory = ({
     actorOrgId: string | undefined,
     actionProjectType: ActionProjectType,
     actor: ActorType.USER | ActorType.IDENTITY,
-    actorId: string
+    actorId: string,
+    snapshotTx?: Knex.Transaction
   ): Promise<TCachedProjectPermission> => {
-    const projectDetails = await requestMemoize(requestMemoKeys.projectFindById(projectId), () =>
-      projectDAL.findById(projectId)
-    );
+    const projectDetails: TPermissionProject | undefined = snapshotTx
+      ? await snapshotTx(TableName.Project).where({ id: projectId }).whereNull("deleteAfter")
+          .first("id", "orgId", "type", "name", "slug", "enforceEncryptedSecretManagerSecretMetadata")
+      : await requestMemoize(requestMemoKeys.projectFindById(projectId), () => projectDAL.findById(projectId));
     if (!projectDetails) {
       throw new NotFoundError({ message: `Project with ${projectId} not found` });
     }
@@ -464,7 +475,8 @@ export const permissionServiceFactory = ({
         projectId
       },
       actorId,
-      actorType: actor
+      actorType: actor,
+      tx: snapshotTx
     });
     if (!permissionData?.length)
       throw new ForbiddenRequestError({
@@ -474,12 +486,14 @@ export const permissionServiceFactory = ({
 
     let username = "";
     if (actor === ActorType.USER) {
-      const userDetails = await requestMemoize(requestMemoKeys.userFindById(actorId), () => userDAL.findById(actorId));
+      const userDetails = snapshotTx
+        ? await snapshotTx(TableName.Users).where({ id: actorId }).first("username")
+        : await requestMemoize(requestMemoKeys.userFindById(actorId), () => userDAL.findById(actorId));
       username = userDetails?.username ?? "";
     } else {
-      const identityDetails = await requestMemoize(requestMemoKeys.identityFindById(actorId), () =>
-        identityDAL.findById(actorId)
-      );
+      const identityDetails = snapshotTx
+        ? await snapshotTx(TableName.Identity).where({ id: actorId }).first("name")
+        : await requestMemoize(requestMemoKeys.identityFindById(actorId), () => identityDAL.findById(actorId));
       username = identityDetails?.name ?? "";
     }
 
@@ -495,7 +509,8 @@ export const permissionServiceFactory = ({
         const orgPermissionData = await permissionDAL.getPermission({
           scopeData: { scope: AccessScope.Organization, orgId: orgIdForBypass },
           actorId,
-          actorType: ActorType.USER
+          actorType: ActorType.USER,
+          tx: snapshotTx
         });
         if (orgPermissionData?.length) {
           const orgPermissionFromRoles = flattenActiveRolesFromMemberships(orgPermissionData, OrgMembershipRole.Custom);
@@ -516,7 +531,8 @@ export const permissionServiceFactory = ({
     projectId,
     actorAuthMethod,
     actorOrgId,
-    actionProjectType
+    actionProjectType,
+    snapshotTx
   }) => {
     let actor = inputActor;
     let actorId = inputActorId;
@@ -525,6 +541,9 @@ export const permissionServiceFactory = ({
       throw new BadRequestError({ message: "Organization context is required for project permission checks" });
     }
 
+    if (snapshotTx && (!snapshotTx.isTransaction || actor !== ActorType.USER)) {
+      throw new ForbiddenRequestError({ message: "Unsupported snapshot actor or transaction" });
+    }
     if (actor === ActorType.SERVICE) {
       return getServiceTokenProjectPermission({
         serviceTokenId: actorId,
@@ -535,6 +554,9 @@ export const permissionServiceFactory = ({
     }
 
     const assumedPrivilegeDetailsCtx = requestContext.get(RequestContextKey.AssumedPrivilegeDetails);
+    if (snapshotTx && assumedPrivilegeDetailsCtx) {
+      throw new ForbiddenRequestError({ message: "Assumed privileges unsupported for snapshot reads" });
+    }
     if (
       assumedPrivilegeDetailsCtx &&
       actor === ActorType.USER &&
@@ -572,7 +594,9 @@ export const permissionServiceFactory = ({
 
     const loadProjectPermission = async (): Promise<TProjectPermissionMemoPayload> => {
       // Layer 2: Redis fingerprint cache (marker 10s + data 10m)
-      const cached: TCachedProjectPermission = await withCacheFingerprint<TCachedProjectPermission>({
+      const cached: TCachedProjectPermission = snapshotTx
+        ? await $fetchProjectPermissionData(projectId, actorOrgId, actionProjectType, narrowedActor, actorId, snapshotTx)
+        : await withCacheFingerprint<TCachedProjectPermission>({
         keyStore,
         dataKey: KeyStorePrefixes.ProjectPermissionData(projectId, narrowedActor, actorId, actionProjectType),
         markerKey: KeyStorePrefixes.ProjectPermissionMarker(projectId, narrowedActor, actorId, actionProjectType),
@@ -674,7 +698,7 @@ export const permissionServiceFactory = ({
     };
 
     // Layer 1: in-memory per-request memoization → Layer 2: Redis fingerprint cache → Layer 3: DB
-    const payload = memoizer ? await memoizer.getOrSet(memoKey, loadProjectPermission) : await loadProjectPermission();
+    const payload = memoizer && !snapshotTx ? await memoizer.getOrSet(memoKey, loadProjectPermission) : await loadProjectPermission();
 
     requestContext.set(RequestContextKey.ProjectDetails, payload.projectDetailsCtx);
     requestContext.set(RequestContextKey.IdentityPermissionMetadata, payload.identityPermissionMetadataCtx);
