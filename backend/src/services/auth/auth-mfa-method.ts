@@ -20,4 +20,3 @@ export const getRequiredMfaMethod = (
 
   return { isMfaRequired, requiredMfaMethod };
 };
-
