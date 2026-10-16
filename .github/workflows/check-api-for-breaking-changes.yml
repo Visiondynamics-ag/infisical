@@ -123,7 +123,7 @@ jobs:
     name: Check API Changes
     needs: generate-api-schema
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - name: Download base API schema
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -139,6 +139,17 @@ jobs:
         with:
           go-version: "1.21.5"
       - name: Install openapi-diff
-        run: go install github.com/oasdiff/oasdiff@latest
+        run: go install github.com/oasdiff/oasdiff@v1.33.0
       - name: Compare exact base and head API schemas
-        run: oasdiff breaking schemas/base/openapi.json schemas/head/openapi.json --fail-on ERR
+        run: |
+          test -s schemas/base/openapi.json
+          test -s schemas/head/openapi.json
+          if cmp -s schemas/base/openapi.json schemas/head/openapi.json; then
+            echo "Exact base and head API schema bytes are identical; no API delta."
+          else
+            comparison_status=$?
+            if [ "$comparison_status" -ne 1 ]; then
+              exit "$comparison_status"
+            fi
+            oasdiff breaking schemas/base/openapi.json schemas/head/openapi.json --fail-on ERR
+          fi
