@@ -51,7 +51,9 @@ type Scenario = "valid" | "wrong" | "untrusted" | "refused" | "stalled";
 async function exercise(scenario: Scenario, numeric: boolean) {
   const sockets = new Set<Socket>();
   const events: string[] = [];
-  let connections = 0, cancels = 0, cancelApplicationBytes = 0, protocolInvalid = false;
+  let connections = 0, cancels = 0, cancelApplicationBytes = 0, rawPostSslBytes = 0, protocolInvalid = false;
+  let auxiliaryClosed!: () => void;
+  const auxiliaryClose = new Promise<void>((resolve) => { auxiliaryClosed = resolve; });
   let querySeen!: () => void;
   const queryReady = new Promise<void>((resolve) => { querySeen = resolve; });
   const contexts = Object.fromEntries(["valid", "wrong", "untrusted"].map((name) => [name,
@@ -60,6 +62,7 @@ async function exercise(scenario: Scenario, numeric: boolean) {
     sockets.add(socket); socket.on("close", () => sockets.delete(socket)); socket.on("error", () => {});
     socket.setTimeout(3000, () => socket.destroy());
     const ordinal = ++connections;
+    if (ordinal === 2) socket.once("close", auxiliaryClosed);
     if (ordinal > 2) { protocolInvalid = true; socket.destroy(); return; }
     let request = Buffer.alloc(0);
     const negotiate = (chunk: Buffer) => {
@@ -68,8 +71,13 @@ async function exercise(scenario: Scenario, numeric: boolean) {
       if (request.length < 8) return;
       socket.removeListener("data", negotiate);
       if (!request.equals(sslRequest)) { protocolInvalid = true; socket.destroy(); return; }
-      if (ordinal === 2 && scenario === "refused") { socket.end("N"); return; }
-      if (ordinal === 2 && scenario === "stalled") return;
+      if (ordinal === 2 && (scenario === "refused" || scenario === "stalled")) {
+        // Observe raw bytes until closure: a same-socket plaintext fallback
+        // must fail, even though no TLS application-data listener exists.
+        socket.on("data", (extra: Buffer) => { rawPostSslBytes += extra.length; });
+        if (scenario === "refused") socket.write("N");
+        return;
+      }
       socket.write("S");
       const secure = new TLSSocket(socket, { isServer: true, secureContext: contexts[ordinal === 1 ? "valid" : scenario] });
       sockets.add(secure); secure.on("close", () => sockets.delete(secure)); secure.on("error", () => {});
@@ -142,6 +150,10 @@ async function exercise(scenario: Scenario, numeric: boolean) {
     const start = performance.now();
     await cancelOwnedQuery({ Client: ObservedClient } as unknown as CancelDriver, client);
     const elapsed = performance.now() - start;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("AUXILIARY_CLOSE_TIMEOUT")), 1000);
+      void auxiliaryClose.then(() => { clearTimeout(timer); resolve(); });
+    });
     await client.end(); await pendingQuery;
     expect(originalAuthorized).toBe(true);
     expect(protocolInvalid).toBe(false);
@@ -149,6 +161,7 @@ async function exercise(scenario: Scenario, numeric: boolean) {
     expect(elapsed).toBeLessThan(1500); // Scheduling allowance; production cap remains 500ms.
     expect(cancels).toBe(scenario === "valid" ? 1 : 0);
     expect(cancelApplicationBytes).toBe(scenario === "valid" ? 16 : 0);
+    expect(rawPostSslBytes).toBe(0);
     expect(events).toEqual(scenario === "valid" ? ["authorized-secure-connect", "server-cancel"] : []);
   } finally {
     clearTimeout(queryTimer);
