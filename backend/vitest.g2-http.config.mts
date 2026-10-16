@@ -3,7 +3,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     globals: true,
-    include: ["test-isolated/g2-http-postgres.integration.test.ts"],
+    include: ["test-isolated/g2-http-postgres.integration.test.ts", "test-isolated/g2-cancel-tls.integration.test.ts"],
     maxWorkers: 1,
     fileParallelism: false,
     testTimeout: 30000,
