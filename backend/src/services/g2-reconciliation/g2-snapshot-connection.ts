@@ -2,7 +2,7 @@ import { performance } from "node:perf_hooks";
 
 import type { Knex } from "knex";
 
-import { cancelOwnedQuery, type CancelDriver, type OwnedPgConnection } from "./g2-snapshot-cancel";
+import { type CancelDriver, cancelOwnedQuery, type OwnedPgConnection } from "./g2-snapshot-cancel";
 import { requireSnapshot, SnapshotRefusal } from "./g2-snapshot-contract";
 
 // Endpoint-local adapter for the pinned Knex/Tarn/node-postgres closure. No global
@@ -22,11 +22,15 @@ export const withSnapshotConnection = async <T>(
 ): Promise<T> => {
   const client = db.client as { config?: { client?: string }; pool?: Pool; driver: CancelDriver };
   requireSnapshot(client.config?.client === "pg" && !!client.pool, "TRANSACTION");
-  const pool = client.pool!;
+  const { pool } = client;
   check();
   const pending = pool.acquire(); // Keep the abort handle Knex.acquireConnection discards.
   let connection: Connection | undefined;
   let stopped: SnapshotRefusal | undefined;
+  const throwIfStopped = () => {
+    const refusal = stopped;
+    if (refusal instanceof SnapshotRefusal) throw refusal;
+  };
   let socketClosed = false;
   let cancellation: Promise<void> | undefined;
   const close = () => {
@@ -34,7 +38,7 @@ export const withSnapshotConnection = async <T>(
       socketClosed = true;
       // Knex's pinned pool validator rejects this before reuse. Closing the
       // owned socket interrupts BEGIN/query/COMMIT/ROLLBACK, including a SQL wait.
-      connection.__knex__disposed = "G2_SNAPSHOT_CANCELLED";
+      Object.assign(connection, { __knex__disposed: "G2_SNAPSHOT_CANCELLED" });
       connection.connection.stream.destroy();
     }
   };
@@ -45,7 +49,11 @@ export const withSnapshotConnection = async <T>(
     if (connection) cancellation = cancelOwnedQuery(client.driver, connection).finally(close);
   };
   const poll = () => {
-    try { check(); } catch (error) { stop(error); }
+    try {
+      check();
+    } catch (error) {
+      stop(error);
+    }
   };
   const timer = setTimeout(() => stop(new SnapshotRefusal("DEADLINE")), Math.max(0, deadline - performance.now()));
   // Existing route supplies a cancellation predicate. Bound detection latency
@@ -57,11 +65,14 @@ export const withSnapshotConnection = async <T>(
     // A grant may win before abort but reach this continuation afterwards.
     // We still own/release it; no transaction may begin after cancellation.
     poll();
-    if (stopped) throw stopped;
-    const guard = () => { if (stopped) throw stopped; check(); };
+    throwIfStopped();
+    const guard = () => {
+      throwIfStopped();
+      check();
+    };
     const result = await work(connection, guard);
     poll();
-    if (stopped) throw stopped;
+    throwIfStopped();
     return result;
   } catch (error) {
     // Never return an ambiguously completed/rolled-back transaction to reuse.

@@ -1,7 +1,7 @@
 import { MongoAbility, RawRuleOf } from "@casl/ability";
 import { PackRule } from "@casl/ability/extra";
-import type { Knex } from "knex";
 import { MongoQuery } from "@ucast/mongo2js";
+import type { Knex } from "knex";
 
 import { ActionProjectType, OrganizationActionScope, ResourceType, TMemberships } from "@app/db/schemas";
 import { ActorAuthMethod, ActorType } from "@app/services/auth/auth-type";

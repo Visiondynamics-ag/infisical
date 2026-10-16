@@ -1,7 +1,7 @@
 import { createMongoAbility, ForbiddenError, MongoAbility, RawRuleOf, subject } from "@casl/ability";
 import { PackRule, packRules, unpackRules } from "@casl/ability/extra";
-import type { Knex } from "knex";
 import { requestContext } from "@fastify/request-context";
+import type { Knex } from "knex";
 
 import {
   AccessScope,
@@ -87,7 +87,10 @@ import {
 // Returns the delegated OAuth scopes for the current request, or undefined when this is not an
 // OAuth-delegated request. The distinction matters: a returned array (even empty) means scope
 // narrowing applies, while undefined means a first-party session / background job is untouched.
-type TPermissionProject = Pick<TProjects, "id" | "orgId" | "type" | "name" | "slug" | "enforceEncryptedSecretManagerSecretMetadata">;
+type TPermissionProject = Pick<
+  TProjects,
+  "id" | "orgId" | "type" | "name" | "slug" | "enforceEncryptedSecretManagerSecretMetadata"
+>;
 
 const getDelegatedOauthScopes = (): OauthScope[] | undefined => {
   const raw = requestContext.get(RequestContextKey.OauthScopes);
@@ -292,7 +295,8 @@ export const permissionServiceFactory = ({
       });
     }
 
-    if (snapshotTx && (!snapshotTx.isTransaction || actor !== ActorType.USER)) throw new ForbiddenRequestError({ message: "Snapshot transaction required" });
+    if (snapshotTx && (!snapshotTx.isTransaction || actor !== ActorType.USER))
+      throw new ForbiddenRequestError({ message: "Snapshot transaction required" });
 
     // Request-scoped memoization: deduplicates org permission checks within the same request
     const memoKey = requestMemoKeys.orgPermission({
@@ -451,7 +455,9 @@ export const permissionServiceFactory = ({
     snapshotTx?: Knex.Transaction
   ): Promise<TCachedProjectPermission> => {
     const projectDetails: TPermissionProject | undefined = snapshotTx
-      ? await snapshotTx(TableName.Project).where({ id: projectId }).whereNull("deleteAfter")
+      ? await snapshotTx(TableName.Project)
+          .where({ id: projectId })
+          .whereNull("deleteAfter")
           .first("id", "orgId", "type", "name", "slug", "enforceEncryptedSecretManagerSecretMetadata")
       : await requestMemoize(requestMemoKeys.projectFindById(projectId), () => projectDAL.findById(projectId));
     if (!projectDetails) {
@@ -595,26 +601,33 @@ export const permissionServiceFactory = ({
     const loadProjectPermission = async (): Promise<TProjectPermissionMemoPayload> => {
       // Layer 2: Redis fingerprint cache (marker 10s + data 10m)
       const cached: TCachedProjectPermission = snapshotTx
-        ? await $fetchProjectPermissionData(projectId, actorOrgId, actionProjectType, narrowedActor, actorId, snapshotTx)
-        : await withCacheFingerprint<TCachedProjectPermission>({
-        keyStore,
-        dataKey: KeyStorePrefixes.ProjectPermissionData(projectId, narrowedActor, actorId, actionProjectType),
-        markerKey: KeyStorePrefixes.ProjectPermissionMarker(projectId, narrowedActor, actorId, actionProjectType),
-        markerTtlSeconds: KeyStoreTtls.ProjectPermissionMarkerTtlSeconds,
-        dataTtlSeconds: KeyStoreTtls.ProjectPermissionDataTtlSeconds,
-        fingerprintFetcher: () =>
-          permissionDAL.getPermissionFingerprint({
+        ? await $fetchProjectPermissionData(
             projectId,
-            orgId: actorOrgId,
+            actorOrgId,
+            actionProjectType,
+            narrowedActor,
             actorId,
-            actorType: narrowedActor
-          }),
-        dataFetcher: () =>
-          $fetchProjectPermissionData(projectId, actorOrgId, actionProjectType, narrowedActor, actorId),
-        reviver: (parsed: TCachedProjectPermission) => {
-          reviveCachedPermissionDates(parsed.permissionData);
-        }
-      });
+            snapshotTx
+          )
+        : await withCacheFingerprint<TCachedProjectPermission>({
+            keyStore,
+            dataKey: KeyStorePrefixes.ProjectPermissionData(projectId, narrowedActor, actorId, actionProjectType),
+            markerKey: KeyStorePrefixes.ProjectPermissionMarker(projectId, narrowedActor, actorId, actionProjectType),
+            markerTtlSeconds: KeyStoreTtls.ProjectPermissionMarkerTtlSeconds,
+            dataTtlSeconds: KeyStoreTtls.ProjectPermissionDataTtlSeconds,
+            fingerprintFetcher: () =>
+              permissionDAL.getPermissionFingerprint({
+                projectId,
+                orgId: actorOrgId,
+                actorId,
+                actorType: narrowedActor
+              }),
+            dataFetcher: () =>
+              $fetchProjectPermissionData(projectId, actorOrgId, actionProjectType, narrowedActor, actorId),
+            reviver: (parsed: TCachedProjectPermission) => {
+              reviveCachedPermissionDates(parsed.permissionData);
+            }
+          });
 
       const { permissionData, projectDetails, username, canBypassSso } = cached;
 
@@ -698,7 +711,8 @@ export const permissionServiceFactory = ({
     };
 
     // Layer 1: in-memory per-request memoization → Layer 2: Redis fingerprint cache → Layer 3: DB
-    const payload = memoizer && !snapshotTx ? await memoizer.getOrSet(memoKey, loadProjectPermission) : await loadProjectPermission();
+    const payload =
+      memoizer && !snapshotTx ? await memoizer.getOrSet(memoKey, loadProjectPermission) : await loadProjectPermission();
 
     requestContext.set(RequestContextKey.ProjectDetails, payload.projectDetailsCtx);
     requestContext.set(RequestContextKey.IdentityPermissionMetadata, payload.identityPermissionMetadataCtx);

@@ -1,5 +1,4 @@
 import { getRequiredMfaMethod } from "../auth/auth-mfa-method";
-
 import { requireSnapshot } from "./g2-snapshot-contract";
 
 // Settings must come from the same transaction as the inventory. Reuse the login
@@ -11,5 +10,9 @@ export const requireSnapshotMfa = (
   method: string | undefined
 ) => {
   const { isMfaRequired, requiredMfaMethod } = getRequiredMfaMethod(org, user);
-  requireSnapshot(!isMfaRequired || (["email", "totp", "webauthn"].includes(requiredMfaMethod) && verified === true && method === requiredMfaMethod), "AUTH");
+  requireSnapshot(
+    !isMfaRequired ||
+      (["email", "totp", "webauthn"].includes(requiredMfaMethod) && verified === true && method === requiredMfaMethod),
+    "AUTH"
+  );
 };
