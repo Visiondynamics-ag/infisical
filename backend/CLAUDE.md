@@ -306,3 +306,7 @@ Migrations in `src/db/migrations/`. Auto-generated Zod schemas in `src/db/schema
 3. Wire in `src/server/routes/index.ts`: instantiate DAL → instantiate service → add to `server.decorate("services", {...})`
 4. Create router in `src/server/routes/v<N>/` (or `src/ee/routes/v<N>/` for EE) and register it
 5. Run `make reviewable-api` to verify lint + types
+
+### Fixed g2 reconciliation candidate
+
+`services/g2-reconciliation` and its fixed v1 router are a narrowly scoped read-only transaction candidate. Internal permission `snapshotTx` bypasses request/Redis caches; it must never come from request input. See that module's README for unsupported actor modes, projection limits and unqualified runtime/deployment checks. Do not use a snapshot response as write authority.

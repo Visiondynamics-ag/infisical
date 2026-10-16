@@ -1,0 +1,8 @@
+{
+  "node": "v22.22.0",
+  "platform": "linux",
+  "arch": "x64",
+  "image": "node@sha256:b5977249434bca5b2efaf4eee25317ad8aecfa7ccf5168e3bcd5f179ba345e1c",
+  "postgresImage": "postgres@sha256:5a05f61a534e50e679d27fb45953afec7821f2ffc2aa6c738b94515ca0891ac2",
+  "independentPureTestsOnly": "Node24.21.0 observed; Node26 MFA transform unsupported; no support inferred"
+}

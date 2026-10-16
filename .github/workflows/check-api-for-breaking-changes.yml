@@ -6,15 +6,34 @@ on:
     paths:
       - "backend/src/server/routes/**"
       - "backend/src/ee/routes/**"
+      - ".github/workflows/check-api-for-breaking-changes.yml"
+
+permissions:
+  contents: read
 
 jobs:
-  check-be-api-changes:
-    name: Check API Changes
+  generate-api-schema:
+    name: Generate ${{ matrix.label }} API schema
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: base
+            ref: ${{ github.event.pull_request.base.sha }}
+          - label: head
+            ref: ${{ github.event.pull_request.head.sha }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4 Nov 14, 2025
+        with:
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+      - name: Verify exact comparison source
+        env:
+          EXPECTED_SHA: ${{ matrix.ref }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       # uncomment this when testing locally using nektos/act
       - uses: KengoTODA/actions-setup-docker-compose@17da3fa4493b7303eff3e8f4f84a07ed6ed2e7a7 # v1, Feb 6, 2026
         if: ${{ env.ACT }}
@@ -51,9 +70,6 @@ jobs:
           DB_CONNECTION_URI: postgres://infisical:infisical@172.17.0.1:5432/infisical?sslmode=disable
           JWT_AUTH_SECRET: something-random
           ENCRYPTION_KEY: 4bnfe4e407b8921c104518903515b218
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with:
-          go-version: "1.21.5"
       - name: Wait for container to be stable and check logs
         run: |
           SECONDS=0
@@ -75,7 +91,6 @@ jobs:
             
             echo "Waiting for container to be healthy... ($SECONDS seconds elapsed)"
             sleep 5
-            SECONDS=$((SECONDS+5))
           done
           
           if [ $HEALTHY -ne 1 ]; then
@@ -88,13 +103,52 @@ jobs:
             docker inspect infisical-api | grep -A 5 "State"
             exit 1
           fi
-      - name: Install openapi-diff
-        run: go install github.com/oasdiff/oasdiff@latest
-      - name: Running OpenAPI Spec diff action
-        run: oasdiff breaking https://app.infisical.com/api/docs/json http://localhost:4000/api/docs/json --fail-on ERR
+      - name: Capture exact-source API schema
+        run: curl --fail --silent --show-error http://localhost:4000/api/docs/json --output openapi.json
+      - name: Retain schema for comparison
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: openapi-${{ matrix.label }}
+          path: openapi.json
+          if-no-files-found: error
+          retention-days: 1
       - name: cleanup
         if: always()
         run: |
           docker compose -f "docker-compose.dev.yml" down
           docker stop infisical-api || true
           docker rm infisical-api || true
+  check-be-api-changes:
+    name: Check API Changes
+    needs: generate-api-schema
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download base API schema
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: openapi-base
+          path: schemas/base
+      - name: Download head API schema
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: openapi-head
+          path: schemas/head
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.21.5"
+      - name: Install openapi-diff
+        run: go install github.com/oasdiff/oasdiff@v1.33.0
+      - name: Compare exact base and head API schemas
+        run: |
+          test -s schemas/base/openapi.json
+          test -s schemas/head/openapi.json
+          if cmp -s schemas/base/openapi.json schemas/head/openapi.json; then
+            echo "Exact base and head API schema bytes are identical; no API delta."
+          else
+            comparison_status=$?
+            if [ "$comparison_status" -ne 1 ]; then
+              exit "$comparison_status"
+            fi
+            oasdiff breaking schemas/base/openapi.json schemas/head/openapi.json --fail-on ERR
+          fi

@@ -1,0 +1,80 @@
+# Fixed g2 reconciliation snapshot candidate
+
+This is an actual provider patch for pinned commit `32ca56e9469e11611a5cc81393ffbf298f8bc5ff`, not a deployed endpoint or executable operator handoff. Backend type/build and bounded PostgreSQL integration are now exercised in disposable Linux amd64 fixtures. Deployment and read release remain held pending exact review and the remaining qualifications below.
+
+The fixed GET route accepts ordinary org-selected user JWTs through the existing authentication plugin. It refuses delegated OAuth, MCP, machine/service tokens, assumed privilege cookies/context, child-org policy and group-derived actor membership. The user must have a current direct accepted/active org membership, active direct project membership, an evaluated org Admin role and unrestricted evaluated identity/environment/folder read abilities. These extra restrictions deliberately fail closed; unsupported actors must not be elevated to make the read work.
+
+The service opens a primary-client transaction, executes `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY` before reads, and checks recovery, isolation and read-only settings on that connection. It rechecks session accessVersion, accepted/unlocked account and applicable MFA state inside the snapshot. The normal authentication plugin still verifies signature/session/expiry first. SSO validation, active temporary-role filtering, deny ordering and permission templating remain in the existing permission service. Internal `snapshotTx` bypasses request/Redis caches and carries the transaction to every invoked permission query and minimal project/username read. The permission DAL's `(tx || db).replicaNode()` bug is corrected to `(tx || db.replicaNode())`; ordinary nontransaction callers retain replica selection.
+
+The target graph uses base identities and independent Membership, MembershipRole and AdditionalPrivilege reads. No role join can hide a target membership or orphan grant. Current pinned schema has no `namespaceId` on AdditionalPrivilege (migration `20260213152852_remove-namespace`); no historical namespace field is fabricated. Case/name collisions and out-of-scope bindings refuse. Roles and rules project only IDs, booleans and closed comparisons. CASL field restrictions are preserved for comparison rather than stripped by a response sanitizer. Metadata values, auth secrets, secret tables, token contents and credentials are not selected by the graph reader. Session checks read only session identity/accessVersion, not token material.
+
+The fixed structure is bound to org/project/environment/folder UUIDs and exact slug/path ancestry. Soft-deleted projects/environments refuse. The selected identity's graph is bounded to 2 candidates, 64 memberships, 128 roles, 256 privileges, and 32 metadata IDs. Count overflow never becomes truncated completeness. Direct graph completeness excludes group-derived effective access, auth configuration, credential delivery and inverse. A zero candidate result is only `ABSENT_AT_SNAPSHOT`; concurrent later creates/revocations remain possible.
+
+Every successful projection has all four authority/delivery/inverse flags false. Nonce correlation is not authority. The endpoint does not create, issue, delete, grant, deliver or retry anything. Errors from SQL/permission evaluation are replaced by closed codes with no original message. No audit record of raw rules, metadata or errors is added.
+
+Checks completed in the isolated dependency successor: full backend typecheck and build; 13 actual provider permission/DAL unit tests; 66 dependency-free projection/MFA/strict-null/lock-policy tests; actual QUIC native loading on Linux amd64. The full 467-migration PostgreSQL 14.24 chain and 16 real DAL/service/permission tests pass in a newly created, network-disabled fixture. These cover repeatable-read under a concurrent insert, read-only write rejection, roleless/orphan/collision/cap paths, metadata non-disclosure, current session/MFA/SSO/deny behavior and transaction/cache/replica escape canaries. The fixture uses a new tmpfs database and unique Unix socket volume, no host ports or existing endpoints; teardown removes its containers and volume. Stock e2e loads environment files, flushes Redis and drops public schema; it was not run.
+
+Dependency correction: the public 1.0.8 parent lists an unavailable optional `@infisical/quic-linux-arm@1.0.8` edge without a lock entry. The exact package registry lookup returns 404. The candidate removes only that parent lock edge; all 2260 package records, direct dependency declarations, tarball integrities and Linux x64/arm64 pins otherwise remain unchanged. The published parent manifest still declares the omitted edge: this is an explicit Linux x64/arm64 lock policy, not a repaired upstream publication. `npm ci --ignore-scripts` is used without force/global omission; a byte-exact regression guards this single change. A future `npm install` may reintroduce the edge. Darwin package archives are unavailable; Linux arm64 archives were verified but not executed; actual deployment architecture is unknown. Do not infer it from Studio or the source architecture catalog.
+
+Lifecycle scripts remain disabled during installation. Required RE2, bcrypt, PKCS11 and argon2 addons are compiled separately from lock-bound installed sources with local Node headers, network disabled, and exact commands/source/output hashes retained in the review packet. No HSM/device or provider access is exercised. Typechecking revealed optional schema typings at nullable graph fields; `nullableString` now accepts only an actual string or null and refuses undefined/malformed values rather than inventing null.
+
+Remaining obligations: full Fastify JWT/signature/expiry/serialization and normal-route regression; deployment version/architecture, current provider actor/transport and graph facts; hard pool/transport cancellation. The 15-second budget checks before/after awaits and projection, with a maximum two-second per-statement timeout; it refuses late success but is not a demonstrated hard pool-acquisition/transport cancellation bound. No Redis fixture or full server was started. Direct graph results do not qualify group-derived effective access, credential delivery, inverse or subsequent write predicates. All four authority flags stay false.
+
+Source rollback is to the accepted parent `7452dce62dbf545c5291ef8ca79625fe7160e390`; this restores the known install blocker and removes the successor's strict nullable-field correction/tests. No deployment was performed, so there is no native rollback action. Root must separately bind any future build/deploy/read release to reviewed artifacts and current admission.
+
+MFA correction: the pinned `getRequiredMfaMethod` body is moved unchanged into the pure `auth-mfa-method.ts` module and re-exported from `auth-fns.ts`, preserving login/OAuth imports. The snapshot DAL now reads `Users.selectedMfaMethod` on its transaction and calls a shared-helper-based validator. Organization enforcement takes precedence; otherwise the user method applies; absent method defaults to email. Required MFA needs verified=true and exact method equality; unsupported method settings refuse. Ten new tests run the actual shipped helper and validator without importing environment/crypto setup; the provider DAL tests now run in the Linux fixture as part of the 13 passing unit tests.
+
+## HTTP fixture successor and pinned qualification harness
+
+The successor adds a dedicated Fastify fixture around the actual `injectIdentity`, JWT cryptography, `tokenServiceFactory`, token/user/org DALs, `injectAssumePrivilege`, `injectPermission`, `verifyAuth`, error handler, validator/serializer and fixed router. Authentication is never injected as a pre-authorized request. Synthetic signed JWTs, session/user/membership rows and an ephemeral database are the only credentials/state. Telemetry is a no-op sink and unused keystore paths throw; no authentication function is mocked. The existing `/api/v1/auth/checkAuth` route provides a bounded normal-route regression. Global startup, all other routes, rate limits, full valid assumed-role workflows and Redis are outside this fixture.
+
+`test-isolated/g2-test-runtime.json` pins Linux x64 Node 22.22.0 and the immutable image digest. `node test-isolated/run-g2-qualification.mjs aggregate` enforces that runtime before running the fixed contract/unit/build/type/HTTP stages. The outer fixture must supply the reviewed new tmpfs PostgreSQL plus socket identity marker; the HTTP server listens on a container-local Unix socket, with network disabled and no host ports. Other runtimes fail before any stage. Node 24.21.0 has independent pure-test evidence only; Node 26's MFA transform mode is unsupported. No CI configuration or native deployment is changed.
+
+HTTP cases cover actual invalid/expired/not-before signatures, missing/revoked session, locked user/inactive membership, org selection, OAuth/MCP rejection, MFA and explicit denies, schema injection, strict success/refusal serialization, metadata canaries and post-handler response-tampering rejection. The cancellation tests saturate a real one-connection pool beyond 15 seconds and disconnect a Unix HTTP client during a real PostgreSQL lock wait. They check no projection and eventual transaction cleanup; the pool case deliberately documents that a hard total 15-second acquisition/transport bound is NOT qualified. No production timeout or authorization guard is weakened to make these tests pass.
+
+### Endpoint-local cancellation successor
+
+The fixed endpoint retains Tarn's pending-acquire abort handle and owns the
+external connection passed to Knex. A 15-second monotonic timer covers acquisition,
+BEGIN, work, COMMIT and rollback; a 20ms check detects the existing route's client
+abort predicate and token expiry. No global pool/timeouts or authorization guards
+change. A grant racing cancellation is owned and released exactly once without
+BEGIN. The lease is retained until the transaction and cancellation transport
+settle. Ambiguous/error/cancelled connections are socket-closed and marked disposed
+for Knex's validator; they cannot be reused by another request.
+
+Socket close alone failed the real backend cleanup checks. Cancellation therefore
+uses a separate **protocol-only** node-postgres Connection, constructed from the
+owned client's fixed Unix socket, or its observed TCP peer IP/port with the original
+TLS certificate name/policy. Unix+SSL is unsupported and declines cancellation before opening a transport.
+TCP plaintext, disabled verification, custom certificate
+checkers or unavailable/mismatched peer metadata decline protocol cancellation;
+the owned connection is still discarded. There is no new DNS resolution.
+The certificate name follows pinned pg semantics: a DNS original host overrides
+configured `ssl.servername`; a numeric host retains its explicit configured name.
+Numeric hosts without an explicit nonempty name decline cancellation rather than
+inventing a TLS identity. It does not authenticate, send a startup
+packet, obtain a pool lease, or execute SQL. It sends only that backend's in-memory
+PID/cancel capability, and only if the captured active query is still the active
+query at send time. PostgreSQL cancellation targets a backend session, not a query
+ID on the wire: it can reach a later cleanup statement on this same owned transaction.
+A transaction-local query guard blocks new application statements and COMMIT after
+stop; only ROLLBACK is allowed. The lease never transfers before cancellation
+settles and disposal, preventing cancellation of a reused request.
+TLS negotiation/certificate validation precedes the capability when TLS is
+configured; no plaintext retry. The cancellation socket has one 500ms timer and
+closed error/end handling, and is destroyed on every terminal path. No capability,
+connection settings or raw error are logged or projected. The original connection
+is discarded after this attempt, even if cancellation delivery is uncertain.
+
+These are endpoint-local controls, **not a hard wall-clock whole-route SLA**.
+Timers require a responsive event loop; pre-route JWT/session middleware is outside
+this budget. Tarn abort does not cancel an underlying pool connection creation;
+late creations remain owned by the existing shared pool. Cancellation has no server
+acknowledgment and may fail; production's existing per-statement <=2s timeout is
+retained. Network partitions, server rollback cleanup, TLS deployment compatibility
+and stalled arbitrary JavaScript work remain residual limits. Test timing tolerances
+are reported explicitly, never added to the production15s deadline. Tests exercise
+real isolated PostgreSQL lock/rollback/client abort and pool saturation, plus pinned
+protocol lifecycle/TLS-negative simulations; they do not prove live TLS deployment.
+The snapshot's execution, credential, delivery and inverse flags remain false.
