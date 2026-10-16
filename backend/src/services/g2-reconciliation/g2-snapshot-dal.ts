@@ -42,7 +42,15 @@ type StructureRows = {
     "id" | "isAccepted" | "isLocked" | "temporaryLockDateEnd" | "isMfaEnabled" | "selectedMfaMethod"
   >;
 };
-type ActorMembership = { id: string; scope: string; scopeProjectId: string | null; status: string; isActive: boolean };
+type ActorMembership = {
+  id: string;
+  actorUserId: string;
+  scopeOrgId: string;
+  scope: string;
+  scopeProjectId: string | null;
+  status: string;
+  isActive: boolean;
+};
 type PackedReadRule = PackRule<RawRule<[string, string]>>;
 const isPackedReadRule = (value: unknown): value is PackedReadRule => {
   if (!Array.isArray(value)) return false;
@@ -58,15 +66,21 @@ const isPackedReadRule = (value: unknown): value is PackedReadRule => {
 // No default connection, ORM, replica selector, credential table or write method.
 export const g2SnapshotDAL = (tx: Knex.Transaction, checkpoint: () => Promise<void>) => {
   requireSnapshot(tx.isTransaction, "TRANSACTION");
-  const one = async <K extends keyof StructureRows>(
+  const one = async <K extends keyof StructureRows, C extends keyof StructureRows[K] & string>(
     table: K,
     filter: Record<string, string>,
-    columns: (keyof StructureRows[K] & string)[]
-  ): Promise<StructureRows[K]> => {
+    columns: C[]
+  ): Promise<Pick<StructureRows[K], C>> => {
     await checkpoint();
-    const rows = await tx<StructureRows[K], StructureRows[K][]>(table).where(filter).select(columns).limit(2);
+    const rows = await tx<StructureRows[K], StructureRows[K][]>(table)
+      .where(filter)
+      .select<Pick<StructureRows[K], C>[]>(columns)
+      .limit(2);
     requireSnapshot(rows.length === 1, "SCOPE");
-    return rows[0];
+    // Pinned Knex leaves a generic composite-table conditional unresolved here.
+    // This asserts only the selected projection type; caller scope/null/UUID/MFA
+    // checks still validate the actual row. It is not provider-schema proof.
+    return rows[0] as Pick<StructureRows[K], C>;
   };
   const structure = async () => {
     const org = await one(TableName.Organization, { id: G2.orgId }, [
@@ -142,7 +156,8 @@ export const g2SnapshotDAL = (tx: Knex.Transaction, checkpoint: () => Promise<vo
     requireSnapshotMfa(org, user, isMfaVerified, mfaMethod);
     await checkpoint();
     requireSnapshot(
-      (await tx<{ id: string }>(TableName.UserGroupMembership).where({ userId }).select("id").limit(1)).length === 0,
+      (await tx<{ id: string; userId: string }>(TableName.UserGroupMembership).where({ userId }).select("id").limit(1))
+        .length === 0,
       "AUTH"
     );
     await checkpoint();

@@ -1,7 +1,7 @@
 import type { RawRule } from "@casl/ability";
 import { packRules } from "@casl/ability/extra";
 import type { Knex } from "knex";
-import { expect, test, vi } from "vitest";
+import { expect, expectTypeOf, test, vi } from "vitest";
 
 import { TableName } from "@app/db/schemas";
 
@@ -175,3 +175,14 @@ test.each(malformedPacked.map((permissions, index) => ({ permissions, index })))
     await expect(graphFixture(permissions).graph()).rejects.toThrow("SCHEMA");
   }
 );
+
+test("DAL selected results retain concrete static types", () => {
+  type Dal = ReturnType<typeof g2SnapshotDAL>;
+  type Structure = Awaited<ReturnType<Dal["structure"]>>;
+  expectTypeOf<Structure>().not.toBeAny();
+  expectTypeOf<Structure["org"]>().not.toBeAny();
+  expectTypeOf<Structure["org"]["id"]>().toEqualTypeOf<string>();
+  expectTypeOf<Structure["org"]["enforceMfa"]>().toEqualTypeOf<boolean>();
+  expectTypeOf<Structure["org"]["selectedMfaMethod"]>().toEqualTypeOf<string | null | undefined>();
+  expectTypeOf<Awaited<ReturnType<Dal["actor"]>>["userId"]>().toEqualTypeOf<string>();
+});
