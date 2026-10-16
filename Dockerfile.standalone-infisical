@@ -38,10 +38,17 @@ ENV INFISICAL_PLATFORM_VERSION $INFISICAL_PLATFORM_VERSION
 ENV VITE_INFISICAL_PLATFORM_VERSION $INFISICAL_PLATFORM_VERSION
 ARG CAPTCHA_SITE_KEY
 ENV VITE_CAPTCHA_SITE_KEY $CAPTCHA_SITE_KEY
-ENV NODE_OPTIONS="--max-old-space-size=8192"
+ARG FRONTEND_BUILD_HEAP_MIB=8192
 
 # Build
-RUN npm run build
+RUN case "$FRONTEND_BUILD_HEAP_MIB" in \
+      [1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]) ;; \
+      *) echo "INVALID_FRONTEND_BUILD_HEAP_MIB" >&2; exit 1 ;; \
+    esac && \
+    if [ "$FRONTEND_BUILD_HEAP_MIB" -lt 512 ] || [ "$FRONTEND_BUILD_HEAP_MIB" -gt 8192 ]; then \
+      echo "INVALID_FRONTEND_BUILD_HEAP_MIB" >&2; exit 1; \
+    fi && \
+    NODE_OPTIONS="--max-old-space-size=${FRONTEND_BUILD_HEAP_MIB}" npm run build
 
 # Production image
 FROM base AS frontend-runner
