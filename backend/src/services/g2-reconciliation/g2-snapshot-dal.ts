@@ -4,6 +4,7 @@ import type { Knex } from "knex";
 import { TableName } from "@app/db/schemas";
 
 import { bounded, G2, Graph, LIMITS, requireSnapshot, uuid } from "./g2-snapshot-contract";
+import { requireSnapshotMfa } from "./g2-snapshot-mfa";
 
 // No default connection, ORM, replica selector, credential table or write method.
 export const g2SnapshotDAL = (tx: Knex.Transaction, checkpoint: () => Promise<void>) => {
@@ -41,9 +42,9 @@ export const g2SnapshotDAL = (tx: Knex.Transaction, checkpoint: () => Promise<vo
   const actor = async (userId: string, sessionId: string, accessVersion: number, isMfaVerified: boolean, mfaMethod: string | undefined, org: { enforceMfa: boolean; selectedMfaMethod: string | null }) => {
     const session = await one(TableName.AuthTokenSession, { id: uuid(sessionId), userId: uuid(userId) }, ["id", "userId", "accessVersion"]);
     requireSnapshot(session.accessVersion === accessVersion, "AUTH");
-    const user = await one(TableName.Users, { id: userId }, ["id", "isAccepted", "isLocked", "temporaryLockDateEnd", "isMfaEnabled"]);
+    const user = await one(TableName.Users, { id: userId }, ["id", "isAccepted", "isLocked", "temporaryLockDateEnd", "isMfaEnabled", "selectedMfaMethod"]);
     requireSnapshot(user.isAccepted === true && !user.isLocked && (!user.temporaryLockDateEnd || new Date(user.temporaryLockDateEnd).getTime() <= Date.now()), "AUTH");
-    requireSnapshot(!(org.enforceMfa || user.isMfaEnabled) || (isMfaVerified && (!org.selectedMfaMethod || org.selectedMfaMethod === mfaMethod)), "AUTH");
+    requireSnapshotMfa(org, user, isMfaVerified, mfaMethod);
     await checkpoint();
     requireSnapshot((await tx(TableName.UserGroupMembership).where({ userId }).select("id").limit(1)).length === 0, "AUTH");
     await checkpoint();
