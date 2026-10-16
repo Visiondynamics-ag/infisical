@@ -91,7 +91,6 @@ jobs:
             
             echo "Waiting for container to be healthy... ($SECONDS seconds elapsed)"
             sleep 5
-            SECONDS=$((SECONDS+5))
           done
           
           if [ $HEALTHY -ne 1 ]; then
