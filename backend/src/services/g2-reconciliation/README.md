@@ -31,3 +31,46 @@ The successor adds a dedicated Fastify fixture around the actual `injectIdentity
 `test-isolated/g2-test-runtime.json` pins Linux x64 Node 22.22.0 and the immutable image digest. `node test-isolated/run-g2-qualification.mjs aggregate` enforces that runtime before running the fixed contract/unit/build/type/HTTP stages. The outer fixture must supply the reviewed new tmpfs PostgreSQL plus socket identity marker; the HTTP server listens on a container-local Unix socket, with network disabled and no host ports. Other runtimes fail before any stage. Node 24.21.0 has independent pure-test evidence only; Node 26's MFA transform mode is unsupported. No CI configuration or native deployment is changed.
 
 HTTP cases cover actual invalid/expired/not-before signatures, missing/revoked session, locked user/inactive membership, org selection, OAuth/MCP rejection, MFA and explicit denies, schema injection, strict success/refusal serialization, metadata canaries and post-handler response-tampering rejection. The cancellation tests saturate a real one-connection pool beyond 15 seconds and disconnect a Unix HTTP client during a real PostgreSQL lock wait. They check no projection and eventual transaction cleanup; the pool case deliberately documents that a hard total 15-second acquisition/transport bound is NOT qualified. No production timeout or authorization guard is weakened to make these tests pass.
+
+### Endpoint-local cancellation successor
+
+The fixed endpoint retains Tarn's pending-acquire abort handle and owns the
+external connection passed to Knex. A 15-second monotonic timer covers acquisition,
+BEGIN, work, COMMIT and rollback; a 20ms check detects the existing route's client
+abort predicate and token expiry. No global pool/timeouts or authorization guards
+change. A grant racing cancellation is owned and released exactly once without
+BEGIN. The lease is retained until the transaction and cancellation transport
+settle. Ambiguous/error/cancelled connections are socket-closed and marked disposed
+for Knex's validator; they cannot be reused by another request.
+
+Socket close alone failed the real backend cleanup checks. Cancellation therefore
+uses a separate **protocol-only** node-postgres Connection, constructed from the
+owned client's fixed Unix socket, or its observed TCP peer IP/port with the original
+TLS certificate name/policy. Unix+SSL is unsupported and declines cancellation before opening a transport.
+TCP plaintext, disabled verification, custom certificate
+checkers or unavailable/mismatched peer metadata decline protocol cancellation;
+the owned connection is still discarded. There is no new DNS resolution. It does not authenticate, send a startup
+packet, obtain a pool lease, or execute SQL. It sends only that backend's in-memory
+PID/cancel capability, and only if the captured active query is still the active
+query at send time. PostgreSQL cancellation targets a backend session, not a query
+ID on the wire: it can reach a later cleanup statement on this same owned transaction.
+A transaction-local query guard blocks new application statements and COMMIT after
+stop; only ROLLBACK is allowed. The lease never transfers before cancellation
+settles and disposal, preventing cancellation of a reused request.
+TLS negotiation/certificate validation precedes the capability when TLS is
+configured; no plaintext retry. The cancellation socket has one 500ms timer and
+closed error/end handling, and is destroyed on every terminal path. No capability,
+connection settings or raw error are logged or projected. The original connection
+is discarded after this attempt, even if cancellation delivery is uncertain.
+
+These are endpoint-local controls, **not a hard wall-clock whole-route SLA**.
+Timers require a responsive event loop; pre-route JWT/session middleware is outside
+this budget. Tarn abort does not cancel an underlying pool connection creation;
+late creations remain owned by the existing shared pool. Cancellation has no server
+acknowledgment and may fail; production's existing per-statement <=2s timeout is
+retained. Network partitions, server rollback cleanup, TLS deployment compatibility
+and stalled arbitrary JavaScript work remain residual limits. Test timing tolerances
+are reported explicitly, never added to the production15s deadline. Tests exercise
+real isolated PostgreSQL lock/rollback/client abort and pool saturation, plus pinned
+protocol lifecycle/TLS-negative simulations; they do not prove live TLS deployment.
+The snapshot's execution, credential, delivery and inverse flags remain false.

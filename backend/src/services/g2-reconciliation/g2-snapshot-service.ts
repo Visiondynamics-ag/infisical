@@ -12,6 +12,7 @@ import { ActorType } from "@app/services/auth/auth-type";
 import type { AuthModeJwtTokenPayload } from "@app/services/auth/auth-type";
 
 import { checkTransaction, G2, projectGraph, requireSnapshot, serializeSnapshot, SnapshotRefusal } from "./g2-snapshot-contract";
+import { withSnapshotConnection } from "./g2-snapshot-connection";
 import { g2SnapshotDAL } from "./g2-snapshot-dal";
 
 // A conditional read rule cannot certify an unfiltered finite inventory. Keep CASL's
@@ -37,7 +38,15 @@ export const g2SnapshotService = (db: Knex, permission: Pick<TPermissionServiceF
         !token.oauthClientId && !token.mcp && !token.scopes, "AUTH");
       requireSnapshot(!requestContext.get(RequestContextKey.AssumedPrivilegeDetails) && !requestContext.get(RequestContextKey.OauthScopes), "AUTH");
       check();
-      const result = await db.transaction(async (tx) => {
+      const result = await withSnapshotConnection(db, started + 15000, check, (connection, guard) => db.transaction(async (tx) => {
+        // Private transaction client only: after stop, no further application SQL
+        // or COMMIT is submitted. ROLLBACK remains available for cleanup.
+        const query = tx.client.query.bind(tx.client);
+        tx.client.query = (conn: unknown, statement: string | { sql: string }) => {
+          try { if ((typeof statement === "string" ? statement : statement.sql) !== "ROLLBACK") guard(); }
+          catch (error) { return Promise.reject(error); }
+          return query(conn, statement);
+        };
         check();
         // First statement after BEGIN. No snapshot or permission read precedes it.
         await tx.raw("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY");
@@ -77,7 +86,7 @@ export const g2SnapshotService = (db: Knex, permission: Pick<TPermissionServiceF
           actor, folders, graph, executionAllowed: false as const, credentialIssuance: false as const, deliveryAllowed: false as const, inverseQualified: false as const };
         serializeSnapshot(response);
         return response;
-      });
+      }, { connection }));
       check(); // Expiry/deadline after COMMIT also discards the entire projection.
       return result;
     } catch (error) {

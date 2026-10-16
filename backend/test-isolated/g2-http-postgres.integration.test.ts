@@ -27,6 +27,7 @@ import { packRules } from "@casl/ability/extra";
 import { TableName } from "@app/db/schemas";
 import { g2SnapshotDAL } from "@app/services/g2-reconciliation/g2-snapshot-dal";
 import { G2, projectGraph } from "@app/services/g2-reconciliation/g2-snapshot-contract";
+import { withSnapshotConnection } from "@app/services/g2-reconciliation/g2-snapshot-connection";
 import { g2SnapshotService } from "@app/services/g2-reconciliation/g2-snapshot-service";
 import { permissionDALFactory } from "@app/ee/services/permission/permission-dal";
 import { ProjectPermissionSub } from "@app/ee/services/permission/project-permission";
@@ -552,7 +553,10 @@ test("HTTP client disconnect during real SQL wait produces no projection and rel
   let attempted = false,
     body = "",
     closed = false;
+  let stopRequested = false;
+  const afterStopQueries: string[] = [];
   const query = (q: { sql: string }) => {
+    if (stopRequested) afterStopQueries.push(q.sql);
     if (q.sql.includes('from "identities"')) attempted = true;
   };
   db.on("query", query);
@@ -570,6 +574,7 @@ test("HTTP client disconnect during real SQL wait produces no projection and rel
     const start = performance.now();
     while (!attempted && performance.now() - start < 5000) await new Promise((r) => setTimeout(r, 10));
     expect(attempted).toBe(true);
+    stopRequested = true;
     request.destroy();
     const stop = performance.now();
     let active = true;
@@ -581,6 +586,7 @@ test("HTTP client disconnect during real SQL wait produces no projection and rel
       active = result.rows[0].n !== 0;
     }
     expect(active).toBe(false);
+    expect(performance.now() - stop).toBeLessThan(1000);
     console.log(
       JSON.stringify({
         transportAbortCleanupMs: Math.ceil(performance.now() - stop),
@@ -588,6 +594,7 @@ test("HTTP client disconnect during real SQL wait produces no projection and rel
         outstandingSnapshotTransactions: 0
       })
     );
+    expect(afterStopQueries.every((sql) => sql === "ROLLBACK")).toBe(true);
     expect(closed).toBe(true);
     expect(body).toBe("");
   } finally {
@@ -596,35 +603,90 @@ test("HTTP client disconnect during real SQL wait produces no projection and rel
     await blocker.rollback();
   }
 });
-test("pool wait exceeding budget refuses late projection; hard total pool bound remains unqualified", async () => {
-  const single = knex({
-    client: "pg",
-    connection: { host: "/g2-fixture-socket", port: 5432, user: "g2_fixture", database: "g2_fixture" },
-    pool: { min: 0, max: 1 },
-    acquireConnectionTimeout: 20000
-  });
+test("saturated pool refuses at endpoint budget before the held connection is released", async () => {
+  const single = knex({ client: "pg", connection: { host: "/g2-fixture-socket", port: 5432, user: "g2_fixture", database: "g2_fixture" }, pool: { min: 0, max: 1 }, acquireConnectionTimeout: 25000 });
   const held = await single.client.acquireConnection();
   const start = performance.now();
+  let settled = false;
   const pending = g2SnapshotService(single, permission)(token(), "a".repeat(64), () => false).then(
-    () => "UNEXPECTED_SUCCESS",
-    (e) => e.code
-  );
+    () => "UNEXPECTED_SUCCESS", (e) => e.code
+  ).finally(() => { settled = true; });
   try {
-    await new Promise((r) => setTimeout(r, 15100));
-    await single.client.releaseConnection(held);
-    expect(await pending).toBe("DEADLINE");
-    expect(performance.now() - start).toBeGreaterThanOrEqual(15000);
-    console.log(
-      JSON.stringify({
-        poolWaitRefusalMs: Math.ceil(performance.now() - start),
-        code: "DEADLINE",
-        hardTotalPoolBoundQualified: false
-      })
-    );
+    // Safety timeout belongs to the test, never to production cleanup.
+    const outcome = await Promise.race([pending, new Promise((r) => setTimeout(() => r("TEST_TIMEOUT"), 15500))]);
+    expect(outcome).toBe("DEADLINE");
+    expect(settled).toBe(true);
+    expect(single.client.pool.numPendingAcquires()).toBe(0);
+    expect(single.client.pool.numUsed()).toBe(1); // Only test's blocker, not a lost grant.
+    console.log(JSON.stringify({ poolWaitRefusalMs: Math.ceil(performance.now() - start), deadlineMs: 15000, testSchedulingToleranceMs: 500, releasedBlockerBeforeRefusal: false }));
   } finally {
+    await single.client.releaseConnection(held);
+    await pending;
     await single.destroy();
   }
-}, 25000);
+}, 30000);
+
+test("real Tarn grant racing abort is released without BEGIN and pool remains usable", async () => {
+  const single = knex({ client: "pg", connection: { host: "/g2-fixture-socket", port: 5432, user: "g2_fixture", database: "g2_fixture" }, pool: { min: 0, max: 1 } });
+  let cancelled = false, began = 0;
+  const listener = () => { cancelled = true; };
+  single.client.pool.on("acquireSuccess", listener);
+  single.on("query", (q) => { if (q.sql === "BEGIN;") began++; });
+  try {
+    await expect(g2SnapshotService(single, permission)(token(), "a".repeat(64), () => cancelled)).rejects.toMatchObject({ code: "DEADLINE" });
+    expect(began).toBe(0);
+    expect(single.client.pool.numUsed()).toBe(0);
+    single.client.pool.removeListener("acquireSuccess", listener);
+    expect((await single.raw("SELECT 1 AS n")).rows[0].n).toBe(1);
+  } finally { await single.destroy(); }
+});
+
+test("queued client abort removes only this acquire and does not consume a later grant", async () => {
+  const single = knex({ client: "pg", connection: { host: "/g2-fixture-socket", port: 5432, user: "g2_fixture", database: "g2_fixture" }, pool: { min: 0, max: 1 } });
+  const held = await single.client.acquireConnection();
+  let cancelled = false;
+  const pending = g2SnapshotService(single, permission)(token(), "a".repeat(64), () => cancelled);
+  const result = pending.catch((e) => e.code);
+  try {
+    await new Promise((r) => setTimeout(r, 40));
+    cancelled = true;
+    expect(await result).toBe("DEADLINE");
+    expect(single.client.pool.numPendingAcquires()).toBe(0);
+    expect(single.client.pool.numUsed()).toBe(1);
+  } finally { await single.client.releaseConnection(held); }
+  try {
+    expect((await single.raw("SELECT 1 AS n")).rows[0].n).toBe(1);
+    expect(single.client.pool.numUsed()).toBe(0);
+  } finally { await single.destroy(); }
+});
+
+for (const mode of ["deadline", "failure"] as const) test("owned connection " + mode + " rolls back real fixture transaction and does not leak", async () => {
+  const single = knex({ client: "pg", connection: { host: "/g2-fixture-socket", port: 5432, user: "g2_fixture", database: "g2_fixture", application_name: "g2-cancel-fixture" }, pool: { min: 0, max: 1 } });
+  // This helper-only test writes synthetic fixture data to prove rollback;
+  // the production service still sets READ ONLY before its first read.
+  await authDb.raw("CREATE TABLE g2_cancel_fixture (id integer)");
+  try {
+    const start = performance.now();
+    const result = withSnapshotConnection(single, start + 200, () => {}, (connection) => single.transaction(async (tx) => {
+      await tx.raw("SET LOCAL statement_timeout = 2000");
+      await tx.raw("INSERT INTO g2_cancel_fixture VALUES (1)");
+      if (mode === "failure") throw new Error("SYNTHETIC_FAILURE");
+      await tx.raw("SELECT pg_sleep(10)");
+    }, { connection }));
+    await expect(result).rejects.toBeDefined();
+    expect(performance.now() - start).toBeLessThan(1500);
+    expect(single.client.pool.numUsed()).toBe(0);
+    let outstanding = 1;
+    const stop = performance.now();
+    while (outstanding && performance.now() - stop < 1000) {
+      await new Promise((r) => setTimeout(r, 20));
+      outstanding = (await authDb.raw("SELECT count(*)::int AS n FROM pg_stat_activity WHERE application_name='g2-cancel-fixture' AND xact_start IS NOT NULL")).rows[0].n;
+    }
+    expect(outstanding).toBe(0);
+    expect((await authDb.raw("SELECT count(*)::int AS n FROM g2_cancel_fixture")).rows[0].n).toBe(0);
+    expect((await single.raw("SELECT 1 AS n")).rows[0].n).toBe(1);
+  } finally { await single.destroy(); await authDb.raw("DROP TABLE g2_cancel_fixture"); }
+});
 
 for (const fault of ["extra", "authority"] as const)
   test("HTTP serializer rejects post-handler " + fault + " injection", async () => {
@@ -635,3 +697,28 @@ for (const fault of ["extra", "authority"] as const)
     expect(r.body).not.toContain("SNAPSHOT_COMPLETE_FOR_FIXED_RECONCILIATION_GRAPH");
     expect(r.body).not.toContain('"executionAllowed":true');
   });
+
+for (const sql of ["SELECT 1 AS forbidden_after_stop", "COMMIT;"]) test("installed transaction guard refuses post-stop " + sql, async () => {
+  let cancelled = false, attempted = false;
+  const emitted: string[] = [];
+  const listener = (q: { sql: string }) => { emitted.push(q.sql); };
+  db.on("query", listener);
+  const checkedPermission = {
+    ...permission,
+    getOrgPermission: async (params: Parameters<typeof permission.getOrgPermission>[0]) => {
+      // Real transaction-bound authorization still executes; this test-only
+      // wrapper then exercises the installed query guard, not a fake tx.
+      const actual = await permission.getOrgPermission(params);
+      cancelled = true;
+      attempted = true;
+      await params.snapshotTx!.raw(sql);
+      return actual;
+    }
+  };
+  try {
+    await expect(g2SnapshotService(db, checkedPermission)(token(), "a".repeat(64), () => cancelled)).rejects.toMatchObject({ code: "DEADLINE" });
+    expect(attempted).toBe(true);
+    expect(emitted).not.toContain(sql);
+    expect(db.client.pool.numUsed()).toBe(0);
+  } finally { db.off("query", listener); }
+});

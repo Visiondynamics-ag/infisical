@@ -20,6 +20,8 @@ const stages = {
     "vitest.unit.config.mts",
     "src/ee/services/permission/permission-snapshot.test.ts",
     "src/services/g2-reconciliation/g2-snapshot-dal.test.ts",
+    "src/services/g2-reconciliation/g2-snapshot-connection.test.ts",
+    "src/services/g2-reconciliation/g2-snapshot-cancel.test.ts",
     "src/server/plugins/auth/verify-auth.test.ts",
     "src/server/plugins/auth/inject-identity.test.ts",
     "--maxWorkers=1",
