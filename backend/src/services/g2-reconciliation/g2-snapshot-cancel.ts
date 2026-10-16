@@ -42,7 +42,11 @@ export const cancelOwnedQuery = (driver: CancelDriver, owned: OwnedPgConnection)
     const options = ssl === true ? {} : ssl as Record<string, unknown>;
     if (options.rejectUnauthorized === false || options.checkServerIdentity !== undefined) return Promise.resolve();
     peer = remote;
-    ssl = { ...options, rejectUnauthorized: true, servername: options.servername || host };
+    // Pinned pg overrides configured servername for DNS hosts. For numeric
+    // hosts it retains an explicit name; unnamed numeric TLS is unsupported.
+    const servername = isIP(host) === 0 ? host : options.servername;
+    if (typeof servername !== "string" || !servername) return Promise.resolve();
+    ssl = { ...options, rejectUnauthorized: true, servername };
     // pg deliberately hides private key properties; preserve without exporting.
     if ("key" in options) (ssl as Record<string, unknown>).key = options.key;
   }

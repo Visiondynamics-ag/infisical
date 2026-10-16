@@ -134,3 +134,26 @@ test("Unix plus SSL is unsupported and refuses before opening transport", async 
   expect(f.config).not.toHaveBeenCalled();
   expect(f.transport.connect).not.toHaveBeenCalled();
 });
+
+test("DNS host overrides conflicting configured TLS name exactly as pinned pg", async () => {
+  const f = fixture({ rejectUnauthorized: true, servername: "different.fixture.invalid" });
+  const done = cancelOwnedQuery(f.driver, f.owned);
+  expect(f.config.mock.calls[0][0].ssl.servername).toBe("fixture.invalid");
+  expect(f.transport.connect).toHaveBeenCalledExactlyOnceWith(5432, "192.0.2.9");
+  f.transport.emit("end"); await done;
+});
+test("numeric original host retains explicit configured TLS name", async () => {
+  const f = fixture({ rejectUnauthorized: true, servername: "explicit.fixture.invalid" });
+  f.owned.host = "192.0.2.9";
+  const done = cancelOwnedQuery(f.driver, f.owned);
+  expect(f.config.mock.calls[0][0].ssl.servername).toBe("explicit.fixture.invalid");
+  expect(f.transport.connect).toHaveBeenCalledExactlyOnceWith(5432, "192.0.2.9");
+  f.transport.emit("end"); await done;
+});
+test("numeric original host without proven explicit TLS name declines transport", async () => {
+  for (const host of ["192.0.2.9", "2001:db8::9"]) for (const ssl of [true, { rejectUnauthorized: true }, { servername: "" }]) {
+    const f = fixture(ssl); f.owned.host = host;
+    await cancelOwnedQuery(f.driver, f.owned);
+    expect(f.config).not.toHaveBeenCalled();
+  }
+});

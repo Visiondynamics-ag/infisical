@@ -49,7 +49,11 @@ owned client's fixed Unix socket, or its observed TCP peer IP/port with the orig
 TLS certificate name/policy. Unix+SSL is unsupported and declines cancellation before opening a transport.
 TCP plaintext, disabled verification, custom certificate
 checkers or unavailable/mismatched peer metadata decline protocol cancellation;
-the owned connection is still discarded. There is no new DNS resolution. It does not authenticate, send a startup
+the owned connection is still discarded. There is no new DNS resolution.
+The certificate name follows pinned pg semantics: a DNS original host overrides
+configured `ssl.servername`; a numeric host retains its explicit configured name.
+Numeric hosts without an explicit nonempty name decline cancellation rather than
+inventing a TLS identity. It does not authenticate, send a startup
 packet, obtain a pool lease, or execute SQL. It sends only that backend's in-memory
 PID/cancel capability, and only if the captured active query is still the active
 query at send time. PostgreSQL cancellation targets a backend session, not a query
