@@ -3,7 +3,7 @@ import type { Knex } from "knex";
 
 import { TableName } from "@app/db/schemas";
 
-import { bounded, G2, Graph, LIMITS, requireSnapshot, uuid } from "./g2-snapshot-contract";
+import { bounded, G2, Graph, LIMITS, nullableString, requireSnapshot, uuid } from "./g2-snapshot-contract";
 import { requireSnapshotMfa } from "./g2-snapshot-mfa";
 
 // No default connection, ORM, replica selector, credential table or write method.
@@ -65,15 +65,19 @@ export const g2SnapshotDAL = (tx: Knex.Transaction, checkpoint: () => Promise<vo
     await checkpoint();
     const identities = bounded(await tx(TableName.Identity).where({ orgId: G2.orgId })
       .whereRaw('lower("name" COLLATE "C") = ?', [G2.name])
-      .select("id", "name", "orgId", "projectId").orderBy("id").limit(LIMITS.identities + 1), LIMITS.identities);
+      .select("id", "name", "orgId", "projectId").orderBy("id").limit(LIMITS.identities + 1), LIMITS.identities)
+      .map((row) => ({ ...row, projectId: nullableString(row.projectId) }));
     // Reject collisions before any fanout; no name-only selection or silent UUID choice.
     requireSnapshot(identities.length <= 1 && identities.every((i) => i.name === G2.name && i.projectId === null), "CONFLICT");
     if (!identities.length) return { identities, memberships: [], roles: [], privileges: [], metadataIds: [] };
     const id = uuid(identities[0].id);
     await checkpoint();
-    const memberships = bounded(await tx(TableName.Membership).where({ actorIdentityId: id }).select("id", "actorIdentityId", "actorUserId", "actorGroupId", "scope", "scopeOrgId", "scopeProjectId", "scopeResourceId", "scopeResourceType", "isActive").orderBy("id").limit(LIMITS.memberships + 1), LIMITS.memberships);
+    const memberships = bounded(await tx(TableName.Membership).where({ actorIdentityId: id }).select("id", "actorIdentityId", "actorUserId", "actorGroupId", "scope", "scopeOrgId", "scopeProjectId", "scopeResourceId", "scopeResourceType", "isActive").orderBy("id").limit(LIMITS.memberships + 1), LIMITS.memberships).map((row) => ({ ...row,
+      actorIdentityId: nullableString(row.actorIdentityId), actorUserId: nullableString(row.actorUserId),
+      actorGroupId: nullableString(row.actorGroupId), scopeProjectId: nullableString(row.scopeProjectId),
+      scopeResourceId: nullableString(row.scopeResourceId), scopeResourceType: nullableString(row.scopeResourceType) }));
     await checkpoint();
-    const roles = bounded(await tx(TableName.MembershipRole).whereIn("membershipId", memberships.map((m) => m.id)).select("id", "membershipId", "role", "customRoleId", "isTemporary").orderBy("id").limit(LIMITS.roles + 1), LIMITS.roles);
+    const roles = bounded(await tx(TableName.MembershipRole).whereIn("membershipId", memberships.map((m) => m.id)).select("id", "membershipId", "role", "customRoleId", "isTemporary").orderBy("id").limit(LIMITS.roles + 1), LIMITS.roles).map((row) => ({ ...row, customRoleId: nullableString(row.customRoleId) }));
     await checkpoint();
     const privileges = bounded(await tx(TableName.AdditionalPrivilege).where({ actorIdentityId: id }).select("id", "actorIdentityId", "actorUserId", "orgId", "projectId", "name", "isTemporary", "permissions").orderBy("id").limit(LIMITS.privileges + 1), LIMITS.privileges);
     await checkpoint();
@@ -82,7 +86,8 @@ export const g2SnapshotDAL = (tx: Knex.Transaction, checkpoint: () => Promise<vo
       requireSnapshot(Array.isArray(p.permissions), "SCHEMA");
       const rules = unpackRules(p.permissions as Parameters<typeof unpackRules>[0]).map((rule) => ({ ...rule,
         subject: Array.isArray(rule.subject) && rule.subject.length === 1 ? rule.subject[0] : rule.subject }));
-      return { ...p, rules };
+      return { ...p, rules, actorIdentityId: nullableString(p.actorIdentityId), actorUserId: nullableString(p.actorUserId),
+        orgId: nullableString(p.orgId), projectId: nullableString(p.projectId) };
     }) };
   };
   return { structure, actor, graph };

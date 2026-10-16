@@ -43,3 +43,5 @@ test('CASL explicit inverted=false remains exact',()=>assert.equal(exactLeafRule
 for(const mutate of [r=>r.action.push('create'),r=>r.conditions.secretPath.$glob+='/*',r=>r.inverted=true,r=>r.fields=['secretValue'],r=>r.reason='canary',r=>r.subject=['secrets','identity'],r=>r.conditions.environment.$eq='protonet']) test(`non-exact grant ${mutate.toString()} is held`,()=>{const r=rule();mutate(r);assert.equal(exactLeafRule([r]),false)});
 test('canary rule and arbitrary names/metadata never serialized',()=>{const g=graph();g.privileges[0].name='CANARY';g.privileges[0].rules=[{canary:'CANARY'}];g.identities[0].canary='CANARY';const s=serializeSnapshot(projectGraph(g));assert.equal(s.includes('CANARY'),false)});
 test('response byte cap enforced',()=>refuses(()=>serializeSnapshot('x'.repeat(65537)),'CAP'));
+for (const value of [undefined, 0, false, {}, []]) test(`nullable SQL field refuses ${JSON.stringify(value)}`, () => assert.throws(() => c.nullableString(value), /SCHEMA/));
+test('nullable SQL field preserves explicit null and string', () => { assert.equal(c.nullableString(null), null); assert.equal(c.nullableString(id(1)), id(1)); });

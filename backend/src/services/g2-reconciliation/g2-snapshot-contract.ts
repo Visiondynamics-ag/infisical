@@ -29,6 +29,11 @@ export function uuid(value: unknown): string {
   requireSnapshot(typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value), "SCHEMA");
   return value;
 }
+// PostgreSQL selected nullable columns must be present: never turn undefined into null.
+export function nullableString(value: unknown): string | null {
+  requireSnapshot(value === null || typeof value === "string", "SCHEMA");
+  return value;
+}
 export function uniqueIds(rows: { id: string }[]) {
   const ids = rows.map((r) => uuid(r.id));
   requireSnapshot(new Set(ids).size === ids.length, "SCHEMA");
