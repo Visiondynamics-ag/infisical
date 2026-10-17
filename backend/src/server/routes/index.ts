@@ -545,6 +545,7 @@ import { injectRateLimits } from "../plugins/inject-rate-limits";
 import { forwardWritesToPrimary } from "../plugins/primary-forwarding-mode";
 import { registerV1Routes } from "./v1";
 import { registerG2ReconciliationRouter } from "./v1/g2-reconciliation-router";
+import { registerKalscanReconciliationRouter } from "./v1/kalscan-reconciliation-router";
 import { initializeOauthConfigSync } from "./v1/sso-router";
 import { registerV2Routes } from "./v2";
 import { registerV3Routes } from "./v3";
@@ -4110,6 +4111,7 @@ export const registerRoutes = async (
       await v1Server.register(registerV1EERoutes);
       await v1Server.register(registerV1Routes);
       await v1Server.register(registerG2ReconciliationRouter, { db, permissionService });
+      await v1Server.register(registerKalscanReconciliationRouter, { db, permissionService });
     },
     { prefix: "/api/v1" }
   );
