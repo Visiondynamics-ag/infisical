@@ -44,6 +44,7 @@ import { requestMemoize } from "@app/lib/request-context/request-memoizer";
 import { TAdditionalPrivilegeDALFactory } from "@app/services/additional-privilege/additional-privilege-dal";
 import { ActorType } from "@app/services/auth/auth-type";
 import { TIdentityDALFactory } from "@app/services/identity/identity-dal";
+import { KALSCAN } from "@app/services/kalscan-reconciliation/kalscan-snapshot-contract";
 import {
   applyOauthScopeToOrgRules,
   applyOauthScopeToProjectRules,
@@ -367,6 +368,57 @@ export const permissionServiceFactory = ({
     };
     return snapshotTx ? loadOrgPermission() : requestMemoize(memoKey, loadOrgPermission);
   };
+
+  // Internal fixed-target read seam only. Public snapshotTx guards remain USER-only.
+  const getFixedKalscanIdentityOrgSnapshotPermission: TPermissionServiceFactory["getFixedKalscanIdentityOrgSnapshotPermission"] =
+    async ({ snapshotTx, actorAuthMethod }) => {
+      if (
+        !snapshotTx?.isTransaction ||
+        getDelegatedOauthScopes() !== undefined ||
+        requestContext.get(RequestContextKey.AssumedPrivilegeDetails)
+      )
+        throw new ForbiddenRequestError({ message: "Fixed identity snapshot context required" });
+      const groups = await snapshotTx<{ id: string; identityId: string }>(TableName.IdentityGroupMembership)
+        .where({ identityId: KALSCAN.identityId })
+        .select("id")
+        .limit(1);
+      if (groups.length) throw new ForbiddenRequestError({ message: "Fixed identity group context unsupported" });
+      const permissionData = await permissionDAL.getPermission({
+        scopeData: { scope: AccessScope.Organization, orgId: KALSCAN.orgId },
+        actorId: KALSCAN.identityId,
+        actorType: ActorType.IDENTITY,
+        tx: snapshotTx
+      });
+      if (
+        permissionData?.length !== 1 ||
+        permissionData.some(
+          (m) =>
+            m.rootOrgId ||
+            m.scopeOrgId !== KALSCAN.orgId ||
+            m.scope !== AccessScope.Organization ||
+            m.actorIdentityId !== KALSCAN.identityId ||
+            m.actorUserId !== null ||
+            m.actorGroupId !== null ||
+            m.scopeProjectId !== null ||
+            m.scopeResourceId !== null ||
+            m.scopeResourceType !== null ||
+            m.isActive !== true
+        )
+      )
+        throw new ForbiddenRequestError({ message: "Fixed identity membership context unsupported" });
+      // Same active-role, custom-role/additional-privilege and CASL evaluation as
+      // ordinary identity org permission. Identity actors have no user SSO step.
+      void actorAuthMethod;
+      const permission = createMongoAbility<OrgPermissionSet>(
+        buildOrgPermissionRules(flattenActiveRolesFromMemberships(permissionData, OrgMembershipRole.Custom)),
+        { conditionsMatcher }
+      );
+      return {
+        permission,
+        memberships: permissionData,
+        hasRole: (role: string) => membershipsHaveActiveRole(permissionData, role)
+      };
+    };
 
   const $checkProjectEnforcement = (projectDetails: Pick<TProjects, "enforceEncryptedSecretManagerSecretMetadata">) => {
     return (enforcement: "enforceEncryptedSecretManagerSecretMetadata") => {
@@ -1309,6 +1361,7 @@ export const permissionServiceFactory = ({
 
   return {
     getOrgPermission,
+    getFixedKalscanIdentityOrgSnapshotPermission,
     getProjectPermission,
     getResourcePermission,
     getProjectPermissions,
