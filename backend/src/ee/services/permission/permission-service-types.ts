@@ -91,6 +91,11 @@ export type TGetOrgPermissionArg = {
 };
 
 export type TPermissionServiceFactory = {
+  /** Internal fixed kalscan target only; never populated from request scope. */
+  getFixedKalscanIdentityOrgSnapshotPermission: (arg: {
+    snapshotTx: Knex.Transaction;
+    actorAuthMethod: ActorAuthMethod;
+  }) => ReturnType<TPermissionServiceFactory["getOrgPermission"]>;
   getOrgPermission: (arg: TGetOrgPermissionArg) => Promise<{
     permission: MongoAbility<OrgPermissionSet, MongoQuery>;
     memberships: Array<
