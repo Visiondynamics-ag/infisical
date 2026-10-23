@@ -1,0 +1,154 @@
+# Repository-side recipe; central policy owns repository identity and admission.
+labels:
+  trust: source-template-value-is-not-authoritative
+
+when:
+  - event: push
+    branch: main
+
+variables:
+  - &restricted_security
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    privileged: false
+    allowPrivilegeEscalation: false
+    seccompProfile: {type: RuntimeDefault}
+    apparmorProfile: {type: RuntimeDefault}
+    capabilities: {drop: [ALL]}
+
+clone:
+  - name: git
+    image: docker.io/woodpeckerci/plugin-git@sha256:b918d4bce61d9ae417498d19ca8b8d560028b9a010b13c46e912ff98f4a0915c
+    settings: {home: /tmp, partial: false, depth: 1}
+    backend_options:
+      kubernetes:
+        securityContext: *restricted_security
+
+steps:
+  - name: structure-gates
+    image: node:26.12.1-bookworm@sha256:5c4012d11d9857c42713ba511fbc19645cac1706bb710d51d42b0d301dff7f88
+    commands:
+      - for script in .woodpecker/scripts/*.mjs; do node --check "$script"; done
+      - node .woodpecker/tests/publisher_contract_test.mjs
+      - for script in .woodpecker/scripts/*.sh; do sh -n "$script"; done
+    backend_options:
+      kubernetes:
+        securityContext: *restricted_security
+
+  - name: offline-registry-contracts
+    image: python:3.13-alpine@sha256:7415fbc3c9e4979cc717d92377ab2bc7b2b4a2af1ac03cc52b5f3f88efedaf3a
+    commands:
+      - python3 -B .woodpecker/tests/image_readback_contract_test.py
+      - python3 -B .woodpecker/tests/harbor_evidence_contract_test.py
+    backend_options:
+      kubernetes:
+        securityContext: *restricted_security
+
+  - name: node-source-checks
+    image: node:26.12.1-bookworm@sha256:5c4012d11d9857c42713ba511fbc19645cac1706bb710d51d42b0d301dff7f88
+    commands:
+      - sh .woodpecker/scripts/pr-checks.sh
+    backend_options:
+      kubernetes:
+        resources:
+          requests: {cpu: "1", memory: 2Gi, ephemeral-storage: 4Gi}
+          limits: {cpu: "6", memory: 8Gi, ephemeral-storage: 10Gi}
+        securityContext: *restricted_security
+
+  - name: go-unit-tests
+    image: golang:1.26.10-bookworm@sha256:5b1f78db1f54cc8cb46e652c51d3f854441c4310a449161b6fe9fb553edab505
+    environment:
+      GOTOOLCHAIN: local
+      GOCACHE: /tmp/go-build
+      GOMODCACHE: /tmp/go-mod
+    commands:
+      - make -C backend-go test-unit
+    backend_options:
+      kubernetes:
+        resources:
+          requests: {cpu: "1", memory: 2Gi, ephemeral-storage: 4Gi}
+          limits: {cpu: "6", memory: 8Gi, ephemeral-storage: 10Gi}
+        securityContext: *restricted_security
+
+  - name: build-and-push-immutable-image
+    image: docker.io/moby/buildkit@sha256:995077ff90af1afff56ff23018699d7511d122b2b111041f2011bd12afd5c0fe
+    environment:
+      REGISTRY_REPOSITORY: "10.43.0.50/infisical/infisical"
+      REGISTRY_USERNAME: {from_secret: registry_username}
+      REGISTRY_PASSWORD: {from_secret: registry_password}
+      REGISTRY_CA_CERT_BASE64: {from_secret: registry_ca_cert_base64}
+    commands:
+      - sh .woodpecker/scripts/rootless-build.sh publish
+    backend_options:
+      kubernetes:
+        hostUsers: true
+        resources:
+          requests: {cpu: "1", memory: 2Gi, ephemeral-storage: 4Gi}
+          limits: {cpu: "6", memory: 8Gi, ephemeral-storage: 10Gi}
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+          runAsNonRoot: true
+          privileged: false
+          seccompProfile: {type: Unconfined}
+          apparmorProfile: {type: Unconfined}
+
+  - name: capture-pushed-digest
+    image: node:26.12.1-bookworm@sha256:5c4012d11d9857c42713ba511fbc19645cac1706bb710d51d42b0d301dff7f88
+    environment:
+      REGISTRY_REPOSITORY: "10.43.0.50/infisical/infisical"
+    commands:
+      - node .woodpecker/scripts/record-image.mjs
+    backend_options:
+      kubernetes:
+        securityContext: *restricted_security
+
+  - name: readback-pushed-image
+    image: python:3.13-alpine@sha256:7415fbc3c9e4979cc717d92377ab2bc7b2b4a2af1ac03cc52b5f3f88efedaf3a
+    environment:
+      REGISTRY_REPOSITORY: "10.43.0.50/infisical/infisical"
+      REGISTRY_PULL_USERNAME: {from_secret: registry_pull_username}
+      REGISTRY_PULL_PASSWORD: {from_secret: registry_pull_password}
+      REGISTRY_CA_CERT_BASE64: {from_secret: registry_ca_cert_base64}
+    commands:
+      - python3 -B .woodpecker/scripts/readback-image.py
+    backend_options:
+      kubernetes:
+        securityContext: *restricted_security
+
+  - name: scan-pushed-digest
+    image: aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
+    environment:
+      REGISTRY_REPOSITORY: "10.43.0.50/infisical/infisical"
+      REGISTRY_PULL_USERNAME: {from_secret: registry_pull_username}
+      REGISTRY_PULL_PASSWORD: {from_secret: registry_pull_password}
+      REGISTRY_CA_CERT_BASE64: {from_secret: registry_ca_cert_base64}
+    commands:
+      - sh .woodpecker/scripts/scan-image.sh
+    backend_options:
+      kubernetes:
+        securityContext: *restricted_security
+
+  - name: emit-harbor-handoff
+    image: node:26.12.1-bookworm@sha256:5c4012d11d9857c42713ba511fbc19645cac1706bb710d51d42b0d301dff7f88
+    environment:
+      REGISTRY_REPOSITORY: "10.43.0.50/infisical/infisical"
+    commands:
+      - node .woodpecker/scripts/emit-harbor-handoff.mjs
+    backend_options:
+      kubernetes:
+        securityContext: *restricted_security
+
+  - name: persist-harbor-evidence
+    image: python:3.13-alpine@sha256:7415fbc3c9e4979cc717d92377ab2bc7b2b4a2af1ac03cc52b5f3f88efedaf3a
+    environment:
+      REGISTRY_REPOSITORY: "10.43.0.50/infisical/infisical"
+      REGISTRY_PUSH_USERNAME: {from_secret: registry_username}
+      REGISTRY_PUSH_PASSWORD: {from_secret: registry_password}
+      REGISTRY_CA_CERT_BASE64: {from_secret: registry_ca_cert_base64}
+    commands:
+      - python3 -B .woodpecker/scripts/harbor_evidence.py --project infisical
+    backend_options:
+      kubernetes:
+        securityContext: *restricted_security
