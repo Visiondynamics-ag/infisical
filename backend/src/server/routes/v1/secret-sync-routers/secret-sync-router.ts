@@ -36,10 +36,15 @@ import {
   CloudflarePagesSyncSchema
 } from "@app/services/secret-sync/cloudflare-pages/cloudflare-pages-schema";
 import {
+  CloudflareSecretsStoreSyncListItemSchema,
+  CloudflareSecretsStoreSyncSchema
+} from "@app/services/secret-sync/cloudflare-secrets-store/cloudflare-secrets-store-sync-schemas";
+import {
   CloudflareWorkersSyncListItemSchema,
   CloudflareWorkersSyncSchema
 } from "@app/services/secret-sync/cloudflare-workers/cloudflare-workers-schemas";
 import { DatabricksSyncListItemSchema, DatabricksSyncSchema } from "@app/services/secret-sync/databricks";
+import { DaytonaSyncListItemSchema, DaytonaSyncSchema } from "@app/services/secret-sync/daytona";
 import { DevinSyncListItemSchema, DevinSyncSchema } from "@app/services/secret-sync/devin";
 import {
   DigitalOceanAppPlatformSyncListItemSchema,
@@ -53,19 +58,27 @@ import { FlyioSyncListItemSchema, FlyioSyncSchema } from "@app/services/secret-s
 import { GcpSyncListItemSchema, GcpSyncSchema } from "@app/services/secret-sync/gcp";
 import { GitHubSyncListItemSchema, GitHubSyncSchema } from "@app/services/secret-sync/github";
 import { GitLabSyncListItemSchema, GitLabSyncSchema } from "@app/services/secret-sync/gitlab";
+import {
+  HasuraCloudSyncListItemSchema,
+  HasuraCloudSyncSchema
+} from "@app/services/secret-sync/hasura-cloud/hasura-cloud-sync-schemas";
 import { HCVaultSyncListItemSchema, HCVaultSyncSchema } from "@app/services/secret-sync/hc-vault";
 import { HerokuSyncListItemSchema, HerokuSyncSchema } from "@app/services/secret-sync/heroku";
 import { HumanitecSyncListItemSchema, HumanitecSyncSchema } from "@app/services/secret-sync/humanitec";
+import { KeeperSyncListItemSchema, KeeperSyncSchema } from "@app/services/secret-sync/keeper";
 import { LaravelForgeSyncListItemSchema, LaravelForgeSyncSchema } from "@app/services/secret-sync/laravel-forge";
 import { NetlifySyncListItemSchema, NetlifySyncSchema } from "@app/services/secret-sync/netlify";
 import { NorthflankSyncListItemSchema, NorthflankSyncSchema } from "@app/services/secret-sync/northflank";
 import { OctopusDeploySyncListItemSchema, OctopusDeploySyncSchema } from "@app/services/secret-sync/octopus-deploy";
 import { OnaSyncListItemSchema, OnaSyncSchema } from "@app/services/secret-sync/ona";
 import { OvhSyncListItemSchema, OvhSyncSchema } from "@app/services/secret-sync/ovh";
+import { PortainerSyncListItemSchema, PortainerSyncSchema } from "@app/services/secret-sync/portainer";
 import { QoverySyncListItemSchema, QoverySyncSchema } from "@app/services/secret-sync/qovery";
 import { RailwaySyncListItemSchema, RailwaySyncSchema } from "@app/services/secret-sync/railway/railway-sync-schemas";
 import { RenderSyncListItemSchema, RenderSyncSchema } from "@app/services/secret-sync/render/render-sync-schemas";
+import { RundeckSyncListItemSchema, RundeckSyncSchema } from "@app/services/secret-sync/rundeck";
 import { SnowflakeSyncListItemSchema, SnowflakeSyncSchema } from "@app/services/secret-sync/snowflake";
+import { SpaceliftSyncListItemSchema, SpaceliftSyncSchema } from "@app/services/secret-sync/spacelift";
 import { SupabaseSyncListItemSchema, SupabaseSyncSchema } from "@app/services/secret-sync/supabase";
 import { TeamCitySyncListItemSchema, TeamCitySyncSchema } from "@app/services/secret-sync/teamcity";
 import { TerraformCloudSyncListItemSchema, TerraformCloudSyncSchema } from "@app/services/secret-sync/terraform-cloud";
@@ -100,7 +113,10 @@ const SecretSyncSchema = z.discriminatedUnion("destination", [
   GitLabSyncSchema,
   CloudflarePagesSyncSchema,
   CloudflareWorkersSyncSchema,
+  CloudflareSecretsStoreSyncSchema,
   SupabaseSyncSchema,
+  RundeckSyncSchema,
+  PortainerSyncSchema,
   ZabbixSyncSchema,
   RailwaySyncSchema,
   ChecklySyncSchema,
@@ -119,8 +135,12 @@ const SecretSyncSchema = z.discriminatedUnion("destination", [
   OnaSyncSchema,
   TravisCISyncSchema,
   SnowflakeSyncSchema,
+  HasuraCloudSyncSchema,
   QoverySyncSchema,
-  Cloud66SyncSchema
+  Cloud66SyncSchema,
+  SpaceliftSyncSchema,
+  DaytonaSyncSchema,
+  KeeperSyncSchema
 ]);
 
 const SecretSyncOptionsSchema = z.discriminatedUnion("destination", [
@@ -148,11 +168,14 @@ const SecretSyncOptionsSchema = z.discriminatedUnion("destination", [
   GitLabSyncListItemSchema,
   CloudflarePagesSyncListItemSchema,
   CloudflareWorkersSyncListItemSchema,
+  CloudflareSecretsStoreSyncListItemSchema,
   DigitalOceanAppPlatformSyncListItemSchema,
   ZabbixSyncListItemSchema,
   RailwaySyncListItemSchema,
   ChecklySyncListItemSchema,
   SupabaseSyncListItemSchema,
+  RundeckSyncListItemSchema,
+  PortainerSyncListItemSchema,
   NetlifySyncListItemSchema,
   NorthflankSyncListItemSchema,
   BitbucketSyncListItemSchema,
@@ -167,8 +190,12 @@ const SecretSyncOptionsSchema = z.discriminatedUnion("destination", [
   OnaSyncListItemSchema,
   TravisCISyncListItemSchema,
   SnowflakeSyncListItemSchema,
+  HasuraCloudSyncListItemSchema,
   QoverySyncListItemSchema,
-  Cloud66SyncListItemSchema
+  Cloud66SyncListItemSchema,
+  SpaceliftSyncListItemSchema,
+  DaytonaSyncListItemSchema,
+  KeeperSyncListItemSchema
 ]);
 
 export const registerSecretSyncRouter = async (server: FastifyZodProvider) => {
@@ -189,7 +216,7 @@ export const registerSecretSyncRouter = async (server: FastifyZodProvider) => {
         })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: () => {
       const secretSyncOptions = server.services.secretSync.listSecretSyncOptions();
       return { secretSyncOptions };
@@ -214,7 +241,7 @@ export const registerSecretSyncRouter = async (server: FastifyZodProvider) => {
         200: z.object({ secretSyncs: SecretSyncSchema.array() })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
       const {
         query: { projectId },

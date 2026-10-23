@@ -1,10 +1,8 @@
 import { useState } from "react";
 import { PlusIcon } from "lucide-react";
 
-import { UpgradePlanModal } from "@app/components/license/UpgradePlanModal";
 import { createNotification } from "@app/components/notifications";
 import { ProjectPermissionCan } from "@app/components/permissions";
-import { DeleteActionModal } from "@app/components/v2";
 import {
   Button,
   Card,
@@ -13,13 +11,13 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  ConfirmationAlertDialog,
   DocumentationLinkBadge
 } from "@app/components/v3";
 import {
   ProjectPermissionCertificateProfileActions,
   ProjectPermissionSub
 } from "@app/context/ProjectPermissionContext/types";
-import { usePopUp } from "@app/hooks";
 import {
   TCertificateProfileWithDetails,
   useDeleteCertificateProfile
@@ -37,8 +35,6 @@ export const CertificateProfilesTab = () => {
   const [selectedProfile, setSelectedProfile] = useState<TCertificateProfileWithDetails | null>(
     null
   );
-  const { popUp, handlePopUpToggle } = usePopUp(["upgradePlan"] as const);
-
   const deleteProfile = useDeleteCertificateProfile();
 
   const handleEditProfile = (profile: TCertificateProfileWithDetails) => {
@@ -108,12 +104,6 @@ export const CertificateProfilesTab = () => {
       </CardContent>
 
       <CreateProfileModal isOpen={isCreateModalOpen} onClose={() => setIsCreateModalOpen(false)} />
-      <UpgradePlanModal
-        isOpen={popUp.upgradePlan.isOpen}
-        onOpenChange={(isOpen) => handlePopUpToggle("upgradePlan", isOpen)}
-        isEnterpriseFeature={popUp.upgradePlan.data?.isEnterpriseFeature}
-        text="Your current plan does not include access to managing template enrollment options for ACME. To unlock this feature, please upgrade to Infisical Enterprise plan."
-      />
 
       {selectedProfile && (
         <>
@@ -137,17 +127,19 @@ export const CertificateProfilesTab = () => {
             mode="clone"
           />
 
-          <DeleteActionModal
+          <ConfirmationAlertDialog
             isOpen={isDeleteModalOpen}
-            title={`Delete Certificate Profile ${selectedProfile.slug}?`}
-            onChange={(isOpen) => {
+            onOpenChange={(isOpen) => {
               setIsDeleteModalOpen(isOpen);
               if (!isOpen) {
                 setSelectedProfile(null);
               }
             }}
-            deleteKey={selectedProfile.slug}
-            onDeleteApproved={handleDeleteConfirm}
+            title={`Delete Certificate Profile ${selectedProfile.slug}?`}
+            description="This permanently removes the profile. Certificates already issued from it are not affected."
+            confirmKey={selectedProfile.slug}
+            confirmLabel="Delete Profile"
+            onConfirm={handleDeleteConfirm}
           />
         </>
       )}

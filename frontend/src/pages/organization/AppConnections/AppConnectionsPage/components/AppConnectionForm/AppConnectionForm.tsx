@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
-import { faInfoCircle } from "@fortawesome/free-solid-svg-icons";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { InfoIcon } from "lucide-react";
 
 import { createNotification } from "@app/components/notifications";
 import { Button } from "@app/components/v3";
@@ -12,11 +11,13 @@ import {
   useUpdateAppConnection
 } from "@app/hooks/api/appConnections";
 import { AppConnection } from "@app/hooks/api/appConnections/enums";
+import { ProjectType } from "@app/hooks/api/projects/types";
 import { DiscriminativePick } from "@app/types";
 
 import { OnePassConnectionForm } from "./1PasswordConnectionForm";
+import { AdcsConnectionForm } from "./AdcsConnectionForm";
 import { AnthropicConnectionForm } from "./AnthropicConnectionForm";
-import { AppConnectionFormProvider } from "./AppConnectionFormContext";
+import { AppConnectionFormProvider, useAppConnectionForm } from "./AppConnectionFormContext";
 import { Auth0ConnectionForm } from "./Auth0ConnectionForm";
 import { AwsConnectionForm } from "./AwsConnectionForm";
 import { AzureADCSConnectionForm } from "./AzureADCSConnectionForm";
@@ -36,6 +37,7 @@ import { CloudflareConnectionForm } from "./CloudflareConnectionForm";
 import { ConvexConnectionForm } from "./ConvexConnectionForm";
 import { DatabricksConnectionForm } from "./DatabricksConnectionForm";
 import { DatadogConnectionForm } from "./DatadogConnectionForm";
+import { DaytonaConnectionForm } from "./DaytonaConnectionForm";
 import { DbtConnectionForm } from "./DbtConnectionForm";
 import { DevinConnectionForm } from "./DevinConnectionForm";
 import { DigiCertConnectionForm } from "./DigiCertConnectionForm";
@@ -44,48 +46,66 @@ import { DNSMadeEasyConnectionForm } from "./DNSMadeEasyConnectionForm";
 import { DopplerConnectionForm } from "./DopplerConnectionForm";
 import { ExternalInfisicalConnectionForm } from "./ExternalInfisicalConnectionForm";
 import { F5BigIpConnectionForm } from "./F5BigIpConnectionForm";
+import { FireworksConnectionForm } from "./FireworksConnectionForm";
 import { FlyioConnectionForm } from "./FlyioConnectionForm";
 import { GcpConnectionForm } from "./GcpConnectionForm";
 import { GitHubConnectionForm } from "./GitHubConnectionForm";
 import { GitHubRadarConnectionForm } from "./GitHubRadarConnectionForm";
 import { GitLabConnectionForm } from "./GitLabConnectionForm";
 import { GoDaddyConnectionForm } from "./GoDaddyConnectionForm";
+import { HasuraCloudConnectionForm } from "./HasuraCloudConnectionForm";
 import { HCVaultConnectionForm } from "./HCVaultConnectionForm";
 import { HerokuConnectionForm } from "./HerokuAppConnectionForm";
+import { HpeIloConnectionForm } from "./HpeIloConnectionForm";
 import { HumanitecConnectionForm } from "./HumanitecConnectionForm";
+import { KeeperConnectionForm } from "./KeeperConnectionForm";
+import { KempLoadMasterConnectionForm } from "./KempLoadMasterConnectionForm";
 import { LaravelForgeConnectionForm } from "./LaravelForgeConnectionForm";
 import { LdapConnectionForm } from "./LdapConnectionForm";
+import { LiteLLMConnectionForm } from "./LiteLLMConnectionForm";
+import { MicrosoftIntuneConnectionForm } from "./MicrosoftIntuneConnectionForm";
 import { MongoDBConnectionForm } from "./MongoDBConnectionForm";
 import { MsSqlConnectionForm } from "./MsSqlConnectionForm";
 import { MySqlConnectionForm } from "./MySqlConnectionForm";
 import { NetlifyConnectionForm } from "./NetlifyConnectionForm";
 import { NetScalerConnectionForm } from "./NetScalerConnectionForm";
 import { NorthflankConnectionForm } from "./NorthflankConnectionForm";
+import { NutanixPrismCentralConnectionForm } from "./NutanixPrismCentralConnectionForm";
 import { OCIConnectionForm } from "./OCIConnectionForm";
 import { OctopusDeployConnectionForm } from "./OctopusDeployConnectionForm";
 import { OktaConnectionForm } from "./OktaConnectionForm";
 import { OnaConnectionForm } from "./OnaConnectionForm";
+import { OpenAIConnectionForm } from "./OpenAIConnectionForm";
 import { OpenRouterConnectionForm } from "./OpenRouterConnectionForm";
 import { OracleDBConnectionForm } from "./OracleDBConnectionForm";
 import { OVHConnectionForm } from "./OVHConnectionForm";
+import { PaloAltoNetworksConnectionForm } from "./PaloAltoNetworksConnectionForm";
+import { PortainerConnectionForm } from "./PortainerConnectionForm";
 import { PostgresConnectionForm } from "./PostgresConnectionForm";
+import { PowerDnsConnectionForm } from "./PowerDnsConnectionForm";
 import { QoveryConnectionForm } from "./QoveryConnectionForm";
 import { RailwayConnectionForm } from "./RailwayConnectionForm";
 import { RedisConnectionForm } from "./RedisConnectionForm";
 import { RenderConnectionForm } from "./RenderConnectionForm";
+import { RundeckConnectionForm } from "./RundeckConnectionForm";
+import { S3CompatibleConnectionForm } from "./S3CompatibleConnectionForm";
 import { SalesforceConnectionForm } from "./SalesforceConnectionForm";
 import { SmbConnectionForm } from "./SmbConnectionForm";
 import { SnowflakeConnectionForm } from "./SnowflakeConnectionForm";
+import { SpaceliftConnectionForm } from "./SpaceliftConnectionForm";
 import { SshConnectionForm } from "./SshConnectionForm";
+import { StripeConnectionForm } from "./StripeConnectionForm";
 import { SupabaseConnectionForm } from "./SupabaseConnectionForm";
 import { TeamCityConnectionForm } from "./TeamCityConnectionForm";
 import { TerraformCloudConnectionForm } from "./TerraformCloudConnectionForm";
 import { TravisCIConnectionForm } from "./TravisCIConnectionForm";
 import { TriggerDevConnectionForm } from "./TriggerDevConnectionForm";
+import { UltraDNSConnectionForm } from "./UltraDNSConnectionForm";
 import { VenafiConnectionForm } from "./VenafiConnectionForm";
 import { VenafiTppConnectionForm } from "./VenafiTppConnectionForm";
 import { VercelConnectionForm } from "./VercelConnectionForm";
 import { WindmillConnectionForm } from "./WindmillConnectionForm";
+import { WinRMConnectionForm } from "./WinRMConnectionForm";
 import { ZabbixConnectionForm } from "./ZabbixConnectionForm";
 
 type AppConnectionFormData = DiscriminativePick<
@@ -117,12 +137,12 @@ const RotationConfirmation = ({
 
   return (
     <div className="p-4">
-      <div className="flex flex-col rounded-xs border border-l-2 border-mineshaft-600 border-l-primary bg-mineshaft-700/80 px-4 py-3">
+      <div className="flex flex-col rounded-xs border border-l-2 border-border-control border-l-project bg-surface-hover/80 px-4 py-3">
         <div className="mb-1 flex items-center text-sm">
-          <FontAwesomeIcon icon={faInfoCircle} size="sm" className="mr-1.5 text-primary" />
+          <InfoIcon className="mr-1.5 size-4 text-project" />
           Automatic Credential Rotation
         </div>
-        <p className="bor mt-1 text-sm text-bunker-200">
+        <p className="bor mt-1 text-sm text-foreground-soft">
           Enabling automatic credential rotation will give Infisical full control over the lifecycle
           of this credential. Infisical will automatically rotate the credential on the schedule you
           configured and you will no longer be able to manage it manually. The original credential
@@ -153,27 +173,34 @@ type FormProps = {
 type CreateFormProps = FormProps & {
   app: AppConnection;
   projectId?: string;
+  projectType?: ProjectType;
 };
 type UpdateFormProps = FormProps & {
   appConnection: TAppConnection;
 };
 
-const CreateForm = ({ app, onComplete, projectId }: CreateFormProps) => {
+const CreateForm = ({ app, onComplete, projectId, projectType }: CreateFormProps) => {
+  const { layout, onPendingChange } = useAppConnectionForm();
   const [pendingFormData, setPendingFormData] = useState<AppConnectionFormData | null>(null);
   const [isConfirmSubmitting, setIsConfirmSubmitting] = useState(false);
   const createAppConnection = useCreateAppConnection();
   const { name: appName } = APP_CONNECTION_MAP[app];
 
   const submitForm = async (formData: AppConnectionFormData) => {
-    const connection = await createAppConnection.mutateAsync({
-      ...formData,
-      projectId
-    });
-    createNotification({
-      text: `Successfully added ${appName} Connection`,
-      type: "success"
-    });
-    onComplete(connection);
+    onPendingChange?.(true);
+    try {
+      const connection = await createAppConnection.mutateAsync({
+        ...formData,
+        projectId
+      });
+      createNotification({
+        text: `Successfully added ${appName} Connection`,
+        type: "success"
+      });
+      onComplete(connection);
+    } finally {
+      onPendingChange?.(false);
+    }
   };
 
   const onSubmit = async (formData: AppConnectionFormData) => {
@@ -187,7 +214,7 @@ const CreateForm = ({ app, onComplete, projectId }: CreateFormProps) => {
   const renderForm = () => {
     switch (app) {
       case AppConnection.AWS:
-        return <AwsConnectionForm onSubmit={onSubmit} />;
+        return <AwsConnectionForm onSubmit={onSubmit} projectType={projectType} />;
       case AppConnection.GitHub:
         return <GitHubConnectionForm projectId={projectId} onSubmit={onSubmit} />;
       case AppConnection.GitHubRadar:
@@ -200,6 +227,10 @@ const CreateForm = ({ app, onComplete, projectId }: CreateFormProps) => {
         return <AzureAppConfigurationConnectionForm onSubmit={onSubmit} projectId={projectId} />;
       case AppConnection.AzureADCS:
         return <AzureADCSConnectionForm onSubmit={onSubmit} />;
+      case AppConnection.ADCS:
+        return <AdcsConnectionForm onSubmit={onSubmit} />;
+      case AppConnection.WinRM:
+        return <WinRMConnectionForm onSubmit={onSubmit} />;
       case AppConnection.Databricks:
         return <DatabricksConnectionForm onSubmit={onSubmit} />;
       case AppConnection.Humanitec:
@@ -238,6 +269,10 @@ const CreateForm = ({ app, onComplete, projectId }: CreateFormProps) => {
         return <OnePassConnectionForm onSubmit={onSubmit} />;
       case AppConnection.Heroku:
         return <HerokuConnectionForm onSubmit={onSubmit} projectId={projectId} />;
+      case AppConnection.Stripe:
+        return <StripeConnectionForm onSubmit={onSubmit} projectId={projectId} />;
+      case AppConnection.HasuraCloud:
+        return <HasuraCloudConnectionForm onSubmit={onSubmit} />;
       case AppConnection.Render:
         return <RenderConnectionForm onSubmit={onSubmit} />;
       case AppConnection.LaravelForge:
@@ -252,6 +287,12 @@ const CreateForm = ({ app, onComplete, projectId }: CreateFormProps) => {
         return <CloudflareConnectionForm onSubmit={onSubmit} />;
       case AppConnection.DNSMadeEasy:
         return <DNSMadeEasyConnectionForm onSubmit={onSubmit} />;
+      case AppConnection.UltraDNS:
+        return <UltraDNSConnectionForm onSubmit={onSubmit} />;
+      case AppConnection.Spacelift:
+        return <SpaceliftConnectionForm onSubmit={onSubmit} />;
+      case AppConnection.S3Compatible:
+        return <S3CompatibleConnectionForm onSubmit={onSubmit} />;
       case AppConnection.AzureDNS:
         return <AzureDNSConnectionForm onSubmit={onSubmit} />;
       case AppConnection.Bitbucket:
@@ -290,10 +331,18 @@ const CreateForm = ({ app, onComplete, projectId }: CreateFormProps) => {
         return <SmbConnectionForm onSubmit={onSubmit} />;
       case AppConnection.OpenRouter:
         return <OpenRouterConnectionForm onSubmit={onSubmit} />;
+      case AppConnection.OpenAI:
+        return <OpenAIConnectionForm onSubmit={onSubmit} />;
       case AppConnection.Anthropic:
         return <AnthropicConnectionForm onSubmit={onSubmit} />;
+      case AppConnection.LiteLLM:
+        return <LiteLLMConnectionForm onSubmit={onSubmit} />;
+      case AppConnection.Fireworks:
+        return <FireworksConnectionForm onSubmit={onSubmit} />;
       case AppConnection.Devin:
         return <DevinConnectionForm onSubmit={onSubmit} />;
+      case AppConnection.Daytona:
+        return <DaytonaConnectionForm onSubmit={onSubmit} />;
       case AppConnection.CircleCI:
         return <CircleCIConnectionForm onSubmit={onSubmit} />;
       case AppConnection.Cloud66:
@@ -304,12 +353,20 @@ const CreateForm = ({ app, onComplete, projectId }: CreateFormProps) => {
         return <VenafiTppConnectionForm onSubmit={onSubmit} />;
       case AppConnection.AzureEntraId:
         return <AzureEntraIdConnectionForm onSubmit={onSubmit} />;
+      case AppConnection.MicrosoftIntune:
+        return <MicrosoftIntuneConnectionForm onSubmit={onSubmit} />;
       case AppConnection.ExternalInfisical:
         return <ExternalInfisicalConnectionForm onSubmit={onSubmit} />;
       case AppConnection.Doppler:
         return <DopplerConnectionForm onSubmit={onSubmit} />;
       case AppConnection.NetScaler:
         return <NetScalerConnectionForm onSubmit={onSubmit} />;
+      case AppConnection.PaloAltoNetworks:
+        return <PaloAltoNetworksConnectionForm onSubmit={onSubmit} />;
+      case AppConnection.Keeper:
+        return <KeeperConnectionForm onSubmit={onSubmit} />;
+      case AppConnection.KempLoadMaster:
+        return <KempLoadMasterConnectionForm onSubmit={onSubmit} />;
       case AppConnection.OVH:
         return <OVHConnectionForm onSubmit={onSubmit} />;
       case AppConnection.Ona:
@@ -328,8 +385,18 @@ const CreateForm = ({ app, onComplete, projectId }: CreateFormProps) => {
         return <DatadogConnectionForm onSubmit={onSubmit} />;
       case AppConnection.F5BigIp:
         return <F5BigIpConnectionForm onSubmit={onSubmit} />;
+      case AppConnection.HpeIloRedFish:
+        return <HpeIloConnectionForm onSubmit={onSubmit} />;
       case AppConnection.Convex:
         return <ConvexConnectionForm onSubmit={onSubmit} />;
+      case AppConnection.Rundeck:
+        return <RundeckConnectionForm onSubmit={onSubmit} />;
+      case AppConnection.Portainer:
+        return <PortainerConnectionForm onSubmit={onSubmit} />;
+      case AppConnection.NutanixPrismCentral:
+        return <NutanixPrismCentralConnectionForm onSubmit={onSubmit} />;
+      case AppConnection.PowerDns:
+        return <PowerDnsConnectionForm onSubmit={onSubmit} />;
       default:
         throw new Error(`Unhandled App ${app}`);
     }
@@ -355,9 +422,12 @@ const CreateForm = ({ app, onComplete, projectId }: CreateFormProps) => {
       )}
       <div
         className={
+          // eslint-disable-next-line no-nested-ternary
           pendingFormData
             ? "hidden"
-            : "flex flex-1 flex-col [&>form]:flex [&>form]:flex-1 [&>form]:flex-col [&>form]:px-4 [&>form]:pt-4"
+            : layout === "dialog"
+              ? undefined
+              : "flex flex-1 flex-col [&>form]:flex [&>form]:flex-1 [&>form]:flex-col [&>form]:px-4 [&>form]:pt-4"
         }
       >
         {renderForm()}
@@ -367,21 +437,27 @@ const CreateForm = ({ app, onComplete, projectId }: CreateFormProps) => {
 };
 
 const UpdateForm = ({ appConnection, onComplete }: UpdateFormProps) => {
+  const { layout, onPendingChange } = useAppConnectionForm();
   const [pendingFormData, setPendingFormData] = useState<AppConnectionFormData | null>(null);
   const [isConfirmSubmitting, setIsConfirmSubmitting] = useState(false);
   const updateAppConnection = useUpdateAppConnection();
   const { name: appName } = APP_CONNECTION_MAP[appConnection.app];
 
   const submitForm = async (formData: AppConnectionFormData) => {
-    const connection = await updateAppConnection.mutateAsync({
-      connectionId: appConnection.id,
-      ...formData
-    });
-    createNotification({
-      text: `Successfully updated ${appName} Connection`,
-      type: "success"
-    });
-    onComplete(connection);
+    onPendingChange?.(true);
+    try {
+      const connection = await updateAppConnection.mutateAsync({
+        connectionId: appConnection.id,
+        ...formData
+      });
+      createNotification({
+        text: `Successfully updated ${appName} Connection`,
+        type: "success"
+      });
+      onComplete(connection);
+    } finally {
+      onPendingChange?.(false);
+    }
   };
 
   const onSubmit = async (formData: AppConnectionFormData) => {
@@ -395,7 +471,13 @@ const UpdateForm = ({ appConnection, onComplete }: UpdateFormProps) => {
   const renderForm = () => {
     switch (appConnection.app) {
       case AppConnection.AWS:
-        return <AwsConnectionForm appConnection={appConnection} onSubmit={onSubmit} />;
+        return (
+          <AwsConnectionForm
+            appConnection={appConnection}
+            onSubmit={onSubmit}
+            projectType={appConnection.project?.type}
+          />
+        );
       case AppConnection.GitHub:
         return (
           <GitHubConnectionForm
@@ -431,6 +513,10 @@ const UpdateForm = ({ appConnection, onComplete }: UpdateFormProps) => {
         );
       case AppConnection.AzureADCS:
         return <AzureADCSConnectionForm appConnection={appConnection} onSubmit={onSubmit} />;
+      case AppConnection.ADCS:
+        return <AdcsConnectionForm appConnection={appConnection} onSubmit={onSubmit} />;
+      case AppConnection.WinRM:
+        return <WinRMConnectionForm appConnection={appConnection} onSubmit={onSubmit} />;
       case AppConnection.Databricks:
         return <DatabricksConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
       case AppConnection.Humanitec:
@@ -487,6 +573,16 @@ const UpdateForm = ({ appConnection, onComplete }: UpdateFormProps) => {
             projectId={appConnection.projectId}
           />
         );
+      case AppConnection.Stripe:
+        return (
+          <StripeConnectionForm
+            onSubmit={onSubmit}
+            appConnection={appConnection}
+            projectId={appConnection.projectId}
+          />
+        );
+      case AppConnection.HasuraCloud:
+        return <HasuraCloudConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
       case AppConnection.Render:
         return <RenderConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
       case AppConnection.LaravelForge:
@@ -507,6 +603,12 @@ const UpdateForm = ({ appConnection, onComplete }: UpdateFormProps) => {
         return <CloudflareConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
       case AppConnection.DNSMadeEasy:
         return <DNSMadeEasyConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
+      case AppConnection.UltraDNS:
+        return <UltraDNSConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
+      case AppConnection.Spacelift:
+        return <SpaceliftConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
+      case AppConnection.S3Compatible:
+        return <S3CompatibleConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
       case AppConnection.AzureDNS:
         return <AzureDNSConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
       case AppConnection.Bitbucket:
@@ -543,10 +645,18 @@ const UpdateForm = ({ appConnection, onComplete }: UpdateFormProps) => {
         return <SmbConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
       case AppConnection.OpenRouter:
         return <OpenRouterConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
+      case AppConnection.OpenAI:
+        return <OpenAIConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
       case AppConnection.Anthropic:
         return <AnthropicConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
+      case AppConnection.LiteLLM:
+        return <LiteLLMConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
+      case AppConnection.Fireworks:
+        return <FireworksConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
       case AppConnection.Devin:
         return <DevinConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
+      case AppConnection.Daytona:
+        return <DaytonaConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
       case AppConnection.CircleCI:
         return <CircleCIConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
       case AppConnection.Cloud66:
@@ -559,6 +669,12 @@ const UpdateForm = ({ appConnection, onComplete }: UpdateFormProps) => {
         return <DopplerConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
       case AppConnection.NetScaler:
         return <NetScalerConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
+      case AppConnection.PaloAltoNetworks:
+        return <PaloAltoNetworksConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
+      case AppConnection.Keeper:
+        return <KeeperConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
+      case AppConnection.KempLoadMaster:
+        return <KempLoadMasterConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
       case AppConnection.OVH:
         return <OVHConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
       case AppConnection.Ona:
@@ -577,14 +693,28 @@ const UpdateForm = ({ appConnection, onComplete }: UpdateFormProps) => {
         return <DatadogConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
       case AppConnection.F5BigIp:
         return <F5BigIpConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
+      case AppConnection.HpeIloRedFish:
+        return <HpeIloConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
       case AppConnection.Convex:
         return <ConvexConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
+      case AppConnection.Rundeck:
+        return <RundeckConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
+      case AppConnection.Portainer:
+        return <PortainerConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
+      case AppConnection.NutanixPrismCentral:
+        return (
+          <NutanixPrismCentralConnectionForm onSubmit={onSubmit} appConnection={appConnection} />
+        );
+      case AppConnection.PowerDns:
+        return <PowerDnsConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
       case AppConnection.Venafi:
         return <VenafiConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
       case AppConnection.VenafiTpp:
         return <VenafiTppConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
       case AppConnection.Netlify:
         return <NetlifyConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
+      case AppConnection.MicrosoftIntune:
+        return <MicrosoftIntuneConnectionForm onSubmit={onSubmit} appConnection={appConnection} />;
       default:
         throw new Error(`Unhandled App ${(appConnection as TAppConnection).app}`);
     }
@@ -610,9 +740,12 @@ const UpdateForm = ({ appConnection, onComplete }: UpdateFormProps) => {
       )}
       <div
         className={
+          // eslint-disable-next-line no-nested-ternary
           pendingFormData
             ? "hidden"
-            : "flex flex-1 flex-col [&>form]:flex [&>form]:flex-1 [&>form]:flex-col [&>form]:px-4 [&>form]:pt-4"
+            : layout === "dialog"
+              ? undefined
+              : "flex flex-1 flex-col [&>form]:flex [&>form]:flex-1 [&>form]:flex-col [&>form]:px-4 [&>form]:pt-4"
         }
       >
         {renderForm()}
@@ -621,22 +754,40 @@ const UpdateForm = ({ appConnection, onComplete }: UpdateFormProps) => {
   );
 };
 
-type Props = { onCancel: () => void; projectId?: string } & Pick<FormProps, "onComplete"> &
+type Props = {
+  onCancel: () => void;
+  onDirtyChange?: (isDirty: boolean) => void;
+  onPendingChange?: (isPending: boolean) => void;
+  layout?: "sheet" | "dialog";
+  projectId?: string;
+  projectType?: ProjectType;
+} & Pick<FormProps, "onComplete"> &
   (
     | { app: AppConnection; appConnection?: undefined }
     | { app?: undefined; appConnection: TAppConnection }
   );
-export const AppConnectionForm = ({ onCancel, projectId, ...props }: Props) => {
+export const AppConnectionForm = ({
+  onCancel,
+  onDirtyChange,
+  onPendingChange,
+  layout = "sheet",
+  projectId,
+  projectType,
+  ...props
+}: Props) => {
   const { app, appConnection } = props;
 
-  const contextValue = useMemo(() => ({ onCancel }), [onCancel]);
+  const contextValue = useMemo(
+    () => ({ onCancel, onDirtyChange, onPendingChange, layout }),
+    [onCancel, onDirtyChange, onPendingChange, layout]
+  );
 
   return (
     <AppConnectionFormProvider value={contextValue}>
       {appConnection ? (
         <UpdateForm {...props} appConnection={appConnection} />
       ) : (
-        <CreateForm {...props} app={app} projectId={projectId} />
+        <CreateForm {...props} app={app} projectId={projectId} projectType={projectType} />
       )}
     </AppConnectionFormProvider>
   );

@@ -51,7 +51,11 @@ import {
   TooltipTrigger
 } from "@app/components/v3";
 import { OrgPermissionIdentityActions, OrgPermissionSubjects, useOrganization } from "@app/context";
-import { getProjectBaseURL } from "@app/helpers/project";
+import {
+  getProjectBaseURL,
+  getProjectDisplayName,
+  pinProjectForNavigation
+} from "@app/helpers/project";
 import {
   getUserTablePreference,
   PreferenceKey,
@@ -64,6 +68,7 @@ import {
   useCountOrgIdentityMemberships,
   useSearchOrgIdentityMemberships
 } from "@app/hooks/api";
+import { useCertManagerInstanceState } from "@app/hooks/api/certManagerInstance";
 import { OrderByDirection } from "@app/hooks/api/generic/types";
 import { IdentityMembershipSearchResult, SearchIdentitiesScope } from "@app/hooks/api/identities";
 import { OrgIdentityOrderBy } from "@app/hooks/api/organization/types";
@@ -136,11 +141,15 @@ const ManagedByCell = ({
   isSubOrganization,
   isSubOrgIdentity
 }: ManagedByCellProps) => {
+  const { data: certManagerInstance } = useCertManagerInstanceState();
+
   if (scope === SearchIdentitiesScope.ProjectScope) {
     return (
       <Badge variant="project">
         <ProjectIcon />
-        {project?.name ?? "Project"}
+        {project
+          ? getProjectDisplayName(project, Boolean(certManagerInstance?.isMultiInstance))
+          : "Project"}
       </Badge>
     );
   }
@@ -180,7 +189,7 @@ const LastUsedCell = ({ lastLoginAuthMethod, lastLoginTime }: LastUsedCellProps)
   const label = formatLastUsed(lastLoginTime);
 
   if (!lastLoginAuthMethod || !lastLoginTime) {
-    return <span className="text-sm text-mineshaft-400">{label}</span>;
+    return <span className="text-sm text-muted">{label}</span>;
   }
 
   return (
@@ -289,7 +298,7 @@ const IdentityActionsMenu = (props: IdentityActionsMenuProps) => {
                 </DropdownMenuItem>
               ))}
               <OrgPermissionCan
-                I={OrgPermissionIdentityActions.Edit}
+                I={OrgPermissionIdentityActions.EditAuth}
                 a={OrgPermissionSubjects.Identity}
               >
                 {(isAllowed) => (
@@ -347,7 +356,7 @@ const SkeletonRow = () => (
     <TableCell>
       <Skeleton className="h-4 w-20" />
     </TableCell>
-    <TableCell>
+    <TableCell variant="action">
       <Skeleton className="h-4 w-4" />
     </TableCell>
   </TableRow>
@@ -389,6 +398,7 @@ const IdentityRow = ({ membership, onDelete, onManageAuth, onAddAuthMethod }: Id
 
   const navigateToIdentity = () => {
     if (isProjectScoped && project) {
+      pinProjectForNavigation(currentOrg.id, project);
       navigate({
         to: `${getProjectBaseURL(project.type)}/identities/$identityId` as const,
         params: {
@@ -422,7 +432,7 @@ const IdentityRow = ({ membership, onDelete, onManageAuth, onAddAuthMethod }: Id
       <TableCell>
         <LastUsedCell lastLoginAuthMethod={lastLoginAuthMethod} lastLoginTime={lastLoginTime} />
       </TableCell>
-      <TableCell>
+      <TableCell variant="action">
         <div className="flex items-center justify-end gap-2">
           {(activeLockoutAuthMethods?.length ?? 0) > 0 && (
             <Tooltip>
@@ -483,7 +493,7 @@ export const IdentityTable = ({ handlePopUpOpen }: Props) => {
     page,
     setPerPage
   } = usePagination<OrgIdentityOrderBy>(OrgIdentityOrderBy.Name, {
-    initPerPage: getUserTablePreference("identityTable", PreferenceKey.PerPage, 20)
+    initPerPage: getUserTablePreference("identityTable", PreferenceKey.PerPage, 10)
   });
 
   const handlePerPageChange = (newPerPage: number) => {
@@ -589,7 +599,7 @@ export const IdentityTable = ({ handlePopUpOpen }: Props) => {
                 )}
                 aria-hidden
               />
-              {isSubOrganization ? "Sub-Organization" : "Organization"}
+              {isSubOrganization ? "Sub-Org" : "Org"}
               {renderTabCount(orgScopeCount)}
             </TabsTrigger>
             <TabsTrigger value="project">
@@ -600,7 +610,7 @@ export const IdentityTable = ({ handlePopUpOpen }: Props) => {
             <TabsTrigger value="all">All{renderTabCount(allScopeCount)}</TabsTrigger>
           </TabsList>
         </Tabs>
-        <InputGroup className="w-1/2">
+        <InputGroup className="w-full max-w-[480px] dashboard:w-auto dashboard:max-w-[640px] dashboard:flex-1">
           <InputGroupAddon>
             <SearchIcon />
           </InputGroupAddon>
@@ -645,7 +655,7 @@ export const IdentityTable = ({ handlePopUpOpen }: Props) => {
                   direction={orderDirection}
                   onSort={handleSort}
                 />
-                <TableHead className="w-5" />
+                <TableHead variant="action" />
               </TableRow>
             </TableHeader>
             <TableBody>

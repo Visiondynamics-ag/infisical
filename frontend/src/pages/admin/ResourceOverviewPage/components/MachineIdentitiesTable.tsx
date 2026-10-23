@@ -1,35 +1,36 @@
 import { useState } from "react";
 import {
-  faEllipsisV,
-  faMagnifyingGlass,
-  faShieldHalved,
-  faWrench,
-  faXmark
-} from "@fortawesome/free-solid-svg-icons";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { ServerCogIcon } from "lucide-react";
+  EllipsisVerticalIcon,
+  SearchIcon,
+  ServerCogIcon,
+  ShieldXIcon,
+  WrenchIcon
+} from "lucide-react";
 
 import { createNotification } from "@app/components/notifications";
 import {
-  DeleteActionModal,
+  Badge,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-  EmptyState,
   IconButton,
-  Input,
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
   Pagination,
   Table,
-  TableContainer,
-  TableSkeleton,
-  TBody,
-  Td,
-  Th,
-  THead,
-  Tr
-} from "@app/components/v2";
-import { Badge } from "@app/components/v3";
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow
+} from "@app/components/v3";
 import {
   getUserTablePreference,
   PreferenceKey,
@@ -39,6 +40,8 @@ import { useDebounce, usePagination, usePopUp, useResetPageHelper } from "@app/h
 import { useAdminRemoveIdentitySuperAdminAccess } from "@app/hooks/api/admin";
 import { useAdminGetIdentities } from "@app/hooks/api/admin/queries";
 import { UsePopUpState } from "@app/hooks/usePopUp";
+import { ConfirmActionDialog } from "@app/pages/admin/components/ConfirmActionDialog";
+import { V3TableEmptyState, V3TableSkeleton } from "@app/pages/admin/components/V3TableHelpers";
 
 const IdentityPanelTable = ({
   handlePopUpOpen
@@ -86,29 +89,33 @@ const IdentityPanelTable = ({
   return (
     <>
       <div className="flex gap-2">
-        <Input
-          value={searchIdentityFilter}
-          onChange={(e) => setSearchIdentityFilter(e.target.value)}
-          leftIcon={<FontAwesomeIcon icon={faMagnifyingGlass} />}
-          placeholder="Search machine identities by name..."
-          className="flex-1"
-        />
+        <InputGroup>
+          <InputGroupAddon>
+            <SearchIcon />
+          </InputGroupAddon>
+          <InputGroupInput
+            aria-label="Search machine identities"
+            value={searchIdentityFilter}
+            onChange={(e) => setSearchIdentityFilter(e.target.value)}
+            placeholder="Search machine identities by name..."
+          />
+        </InputGroup>
       </div>
       <div className="mt-4">
-        <TableContainer>
+        {!isEmpty && (
           <Table>
-            <THead>
-              <Tr>
-                <Th>Name</Th>
-                <Th className="w-5" />
-              </Tr>
-            </THead>
-            <TBody>
-              {isPending && <TableSkeleton columns={2} innerKey="identities" />}
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead variant="action" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {isPending && <V3TableSkeleton columns={2} name="identities" />}
               {!isPending &&
                 identities?.map(({ name, id, isInstanceAdmin }) => (
-                  <Tr key={`identity-${id}`} className="w-full">
-                    <Td>
+                  <TableRow key={`identity-${id}`} className="w-full">
+                    <TableCell>
                       {name}
                       {isInstanceAdmin && (
                         <Badge variant="info" className="ml-2">
@@ -116,51 +123,42 @@ const IdentityPanelTable = ({
                           Server Admin
                         </Badge>
                       )}
-                    </Td>
-                    <Td>
+                    </TableCell>
+                    <TableCell variant="action">
                       {isInstanceAdmin && (
                         <div className="flex justify-end">
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
-                              <IconButton
-                                ariaLabel="Options"
-                                colorSchema="secondary"
-                                className="w-6"
-                                variant="plain"
-                              >
-                                <FontAwesomeIcon icon={faEllipsisV} />
+                              <IconButton aria-label="Options" size="xs" variant="ghost">
+                                <EllipsisVerticalIcon />
                               </IconButton>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent sideOffset={2} align="end">
                               <DropdownMenuItem
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  handlePopUpOpen("removeServerAdmin", { name, id });
+                                  handlePopUpOpen("removeServerAdmin", {
+                                    name,
+                                    id
+                                  });
                                 }}
-                                icon={
-                                  <div className="relative">
-                                    <FontAwesomeIcon icon={faShieldHalved} />
-                                    <FontAwesomeIcon
-                                      className="absolute -right-1 -bottom-[0.01rem]"
-                                      size="2xs"
-                                      icon={faXmark}
-                                    />
-                                  </div>
-                                }
                               >
+                                <ShieldXIcon />
                                 Remove Server Admin
                               </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
                         </div>
                       )}
-                    </Td>
-                  </Tr>
+                    </TableCell>
+                  </TableRow>
                 ))}
-            </TBody>
+            </TableBody>
           </Table>
-          {!isPending && isEmpty && <EmptyState title="No identities found" icon={faWrench} />}
-        </TableContainer>
+        )}
+        {!isPending && isEmpty && (
+          <V3TableEmptyState title="No identities found" icon={WrenchIcon} />
+        )}
         {!isPending && totalCount > 0 && (
           <Pagination
             count={totalCount}
@@ -180,10 +178,13 @@ export const MachineIdentitiesTable = () => {
     "removeServerAdmin"
   ] as const);
 
-  const { mutate: deleteIdentitySuperAdminAccess } = useAdminRemoveIdentitySuperAdminAccess();
+  const { mutateAsync: deleteIdentitySuperAdminAccess } = useAdminRemoveIdentitySuperAdminAccess();
 
   const handleRemoveServerAdmin = async () => {
-    const { id } = popUp?.removeServerAdmin?.data as { id: string; name: string };
+    const { id } = popUp?.removeServerAdmin?.data as {
+      id: string;
+      name: string;
+    };
 
     await deleteIdentitySuperAdminAccess(id);
     createNotification({
@@ -195,25 +196,25 @@ export const MachineIdentitiesTable = () => {
   };
 
   return (
-    <div className="mb-6 rounded-lg border border-mineshaft-600 bg-mineshaft-900 p-4">
-      <div className="mb-4 flex items-center justify-between">
-        <div>
-          <p className="text-xl font-medium text-mineshaft-100">Machine Identities</p>
-          <p className="text-sm text-bunker-300">Manage machine identities across your instance.</p>
-        </div>
-      </div>
-      <IdentityPanelTable handlePopUpOpen={handlePopUpOpen} />
-      <DeleteActionModal
+    <Card className="mb-6">
+      <CardHeader>
+        <CardTitle>Machine Identities</CardTitle>
+        <CardDescription>Manage machine identities across your instance.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <IdentityPanelTable handlePopUpOpen={handlePopUpOpen} />
+      </CardContent>
+      <ConfirmActionDialog
         isOpen={popUp.removeServerAdmin.isOpen}
         title={`Are you sure you want to remove Server Admin permissions from ${
           (popUp?.removeServerAdmin?.data as { name: string })?.name || ""
         }?`}
-        subTitle=""
-        onChange={(isOpen) => handlePopUpToggle("removeServerAdmin", isOpen)}
-        deleteKey="confirm"
-        onDeleteApproved={handleRemoveServerAdmin}
-        buttonText="Remove Access"
+        onOpenChange={(isOpen) => handlePopUpToggle("removeServerAdmin", isOpen)}
+        confirmationKey="confirm"
+        description="You can grant Server Admin access again later."
+        onConfirm={handleRemoveServerAdmin}
+        confirmLabel="Remove Access"
       />
-    </div>
+    </Card>
   );
 };

@@ -8,6 +8,7 @@ import { AUDIT_LOG_SENSITIVE_VALUE } from "@app/lib/config/const";
 import { BadRequestError } from "@app/lib/errors";
 import { removeTrailingSlash } from "@app/lib/fn";
 import { secretsLimit } from "@app/server/config/rateLimiter";
+import { getClientDisconnectSignal } from "@app/server/lib/client-disconnect";
 import { BaseSecretNameSchema, SecretNameSchema } from "@app/server/lib/schemas";
 import { getTelemetryDistinctId } from "@app/server/lib/telemetry";
 import { getUserAgentType } from "@app/server/plugins/audit-log";
@@ -28,7 +29,14 @@ const SecretReferenceNode = z.object({
   key: z.string(),
   value: z.string().optional(),
   environment: z.string(),
-  secretPath: z.string()
+  secretPath: z.string(),
+  project: z
+    .object({
+      id: z.string(),
+      slug: z.string(),
+      name: z.string()
+    })
+    .optional()
 });
 
 const DuplicateSecretAttributesSchema = z
@@ -166,6 +174,7 @@ export const registerSecretRouter = async (server: FastifyZodProvider) => {
                 .omit({ createdAt: true, updatedAt: true })
                 .extend({
                   secretValueHidden: z.boolean(),
+                  secretPath: z.string().optional(),
                   secretMetadata: ResourceMetadataWithEncryptionSchema.optional()
                 })
                 .array()
@@ -211,7 +220,8 @@ export const registerSecretRouter = async (server: FastifyZodProvider) => {
         includeImports: req.query.includeImports,
         recursive: req.query.recursive,
         tagSlugs: req.query.tagSlugs,
-        ifNoneMatch: req.headers["if-none-match"]
+        ifNoneMatch: req.headers["if-none-match"],
+        abortSignal: getClientDisconnectSignal(reply)
       });
 
       const { secrets, imports, etag, notModified } = result;
@@ -470,7 +480,7 @@ export const registerSecretRouter = async (server: FastifyZodProvider) => {
         ])
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.SERVICE_TOKEN, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.SERVICE_TOKEN, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
       const secretOperation = await server.services.secret.createSecretRaw({
         actorId: req.permission.id,
@@ -619,7 +629,12 @@ export const registerSecretRouter = async (server: FastifyZodProvider) => {
           .optional()
           .nullable()
           .describe(RAW_SECRETS.UPDATE.secretReminderRepeatDays),
-        secretReminderRecipients: z.string().array().optional().describe(RAW_SECRETS.UPDATE.secretReminderRecipients),
+        secretReminderRecipients: z
+          .string()
+          .uuid()
+          .array()
+          .optional()
+          .describe(RAW_SECRETS.UPDATE.secretReminderRecipients),
         newSecretName: SecretNameSchema.optional().describe(RAW_SECRETS.UPDATE.newSecretName),
         secretComment: z.string().optional().describe(RAW_SECRETS.UPDATE.secretComment)
       }),
@@ -634,7 +649,7 @@ export const registerSecretRouter = async (server: FastifyZodProvider) => {
         ])
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.SERVICE_TOKEN, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.SERVICE_TOKEN, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
       const secretOperation = await server.services.secret.updateSecretRaw({
         actorId: req.permission.id,
@@ -781,7 +796,13 @@ export const registerSecretRouter = async (server: FastifyZodProvider) => {
         ])
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.API_KEY, AuthMode.SERVICE_TOKEN, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([
+      AuthMode.JWT,
+      AuthMode.API_KEY,
+      AuthMode.SERVICE_TOKEN,
+      AuthMode.IDENTITY_ACCESS_TOKEN,
+      AuthMode.OAUTH
+    ]),
     handler: async (req) => {
       const secretOperation = await server.services.secret.deleteSecretRaw({
         actorId: req.permission.id,
@@ -877,7 +898,7 @@ export const registerSecretRouter = async (server: FastifyZodProvider) => {
         })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
       const { projectId, isSourceUpdated, isDestinationUpdated } = await server.services.secret.moveSecrets({
         actorId: req.permission.id,
@@ -966,7 +987,7 @@ export const registerSecretRouter = async (server: FastifyZodProvider) => {
         })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
       const { projectId, results } = await server.services.secret.duplicateSecrets({
         actorId: req.permission.id,
@@ -1062,7 +1083,7 @@ export const registerSecretRouter = async (server: FastifyZodProvider) => {
         ])
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.SERVICE_TOKEN, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.SERVICE_TOKEN, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
       const { environment, secretPath, secrets: inputSecrets } = req.body;
 
@@ -1217,7 +1238,7 @@ export const registerSecretRouter = async (server: FastifyZodProvider) => {
         ])
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.SERVICE_TOKEN, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.SERVICE_TOKEN, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
       const { environment, secretPath, secrets: inputSecrets } = req.body;
 
@@ -1374,7 +1395,7 @@ export const registerSecretRouter = async (server: FastifyZodProvider) => {
         ])
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.SERVICE_TOKEN, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.SERVICE_TOKEN, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
       const { environment, secretPath, secrets: inputSecrets } = req.body;
 
@@ -1485,7 +1506,7 @@ export const registerSecretRouter = async (server: FastifyZodProvider) => {
         })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.OAUTH]),
     handler: async (req) => {
       const { secretName } = req.params;
       const { secretPath, environment, projectId } = req.query;
@@ -1541,7 +1562,7 @@ export const registerSecretRouter = async (server: FastifyZodProvider) => {
         })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.OAUTH]),
     handler: async (req) => {
       const { secretName } = req.params;
       const { secretPath, environment, projectId } = req.query;

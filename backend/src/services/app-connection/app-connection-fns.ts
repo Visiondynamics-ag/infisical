@@ -10,10 +10,10 @@ import {
   validateOCIConnectionCredentials
 } from "@app/ee/services/app-connections/oci";
 import { getOracleDBConnectionListItem, OracleDBConnectionMethod } from "@app/ee/services/app-connections/oracledb";
-import { TGatewayServiceFactory } from "@app/ee/services/gateway/gateway-service";
 import { TGatewayV2ServiceFactory } from "@app/ee/services/gateway-v2/gateway-v2-service";
 import { TLicenseServiceFactory } from "@app/ee/services/license/license-service";
-import { SECRET_ROTATION_CONNECTION_MAP } from "@app/ee/services/secret-rotation-v2/secret-rotation-v2-maps";
+import { SecretRotation } from "@app/ee/services/secret-rotation-v2/secret-rotation-v2-enums";
+import { getSecretRotationConnectionApps } from "@app/ee/services/secret-rotation-v2/secret-rotation-v2-maps";
 import { SECRET_SCANNING_DATA_SOURCE_CONNECTION_MAP } from "@app/ee/services/secret-scanning-v2/secret-scanning-v2-maps";
 import { TKeyStoreFactory } from "@app/keystore/keystore";
 import { crypto } from "@app/lib/crypto/cryptography";
@@ -35,6 +35,7 @@ import {
   OnePassConnectionMethod,
   validateOnePassConnectionCredentials
 } from "./1password";
+import { ADCSConnectionMethod, getADCSConnectionListItem, validateADCSConnectionCredentials } from "./adcs";
 import {
   AnthropicConnectionMethod,
   getAnthropicConnectionListItem,
@@ -119,6 +120,7 @@ import {
   validateDatabricksConnectionCredentials
 } from "./databricks/databricks-connection-fns";
 import { DatadogConnectionMethod, getDatadogConnectionListItem, validateDatadogConnectionCredentials } from "./datadog";
+import { DaytonaConnectionMethod, getDaytonaConnectionListItem, validateDaytonaConnectionCredentials } from "./daytona";
 import { DbtConnectionMethod, getDbtConnectionListItem, validateDbtConnectionCredentials } from "./dbt";
 import { DevinConnectionMethod, getDevinConnectionListItem, validateDevinConnectionCredentials } from "./devin";
 import {
@@ -148,6 +150,11 @@ import {
   getF5BigIpConnectionListItem,
   validateF5BigIpConnectionCredentials
 } from "./f5-big-ip";
+import {
+  FireworksConnectionMethod,
+  getFireworksConnectionListItem,
+  validateFireworksConnectionCredentials
+} from "./fireworks";
 import { FlyioConnectionMethod, getFlyioConnectionListItem, validateFlyioConnectionCredentials } from "./flyio";
 import { GcpConnectionMethod, getGcpConnectionListItem, validateGcpConnectionCredentials } from "./gcp";
 import {
@@ -165,23 +172,41 @@ import { GitLabConnectionMethod } from "./gitlab";
 import { getGitLabConnectionListItem, validateGitLabConnectionCredentials } from "./gitlab/gitlab-connection-fns";
 import { getGoDaddyConnectionListItem, GoDaddyConnectionMethod, validateGoDaddyConnectionCredentials } from "./godaddy";
 import {
+  getHasuraCloudConnectionListItem,
+  HasuraCloudConnectionMethod,
+  validateHasuraCloudConnectionCredentials
+} from "./hasura-cloud";
+import {
   getHCVaultConnectionListItem,
   HCVaultConnectionMethod,
   validateHCVaultConnectionCredentials
 } from "./hc-vault";
 import { HerokuConnectionMethod } from "./heroku";
 import { getHerokuConnectionListItem, validateHerokuConnectionCredentials } from "./heroku/heroku-connection-fns";
+import { getHpeIloConnectionListItem, HpeIloConnectionMethod, validateHpeIloConnectionCredentials } from "./hpe-ilo";
 import {
   getHumanitecConnectionListItem,
   HumanitecConnectionMethod,
   validateHumanitecConnectionCredentials
 } from "./humanitec";
+import { getKeeperConnectionListItem, KeeperConnectionMethod, validateKeeperConnectionCredentials } from "./keeper";
+import {
+  getKempLoadMasterConnectionListItem,
+  KempLoadMasterConnectionMethod,
+  validateKempLoadMasterConnectionCredentials
+} from "./kemp-loadmaster";
 import {
   getLaravelForgeConnectionListItem,
   LaravelForgeConnectionMethod,
   validateLaravelForgeConnectionCredentials
 } from "./laravel-forge";
 import { getLdapConnectionListItem, LdapConnectionMethod, validateLdapConnectionCredentials } from "./ldap";
+import { getLiteLLMConnectionListItem, LiteLLMConnectionMethod, validateLiteLLMConnectionCredentials } from "./litellm";
+import {
+  getMicrosoftIntuneConnectionListItem,
+  MicrosoftIntuneConnectionMethod,
+  validateMicrosoftIntuneConnectionCredentials
+} from "./microsoft-intune";
 import { getMongoDBConnectionListItem, MongoDBConnectionMethod, validateMongoDBConnectionCredentials } from "./mongodb";
 import { getMsSqlConnectionListItem, MsSqlConnectionMethod } from "./mssql";
 import { MySqlConnectionMethod } from "./mysql/mysql-connection-enums";
@@ -198,6 +223,11 @@ import {
   validateNorthflankConnectionCredentials
 } from "./northflank";
 import {
+  getNutanixPrismCentralConnectionListItem,
+  NutanixPrismCentralConnectionMethod,
+  validateNutanixPrismCentralConnectionCredentials
+} from "./nutanix-prism-central";
+import {
   getOctopusDeployConnectionListItem,
   OctopusDeployConnectionMethod,
   validateOctopusDeployConnectionCredentials
@@ -209,13 +239,35 @@ import {
   OpenRouterConnectionMethod,
   validateOpenRouterConnectionCredentials
 } from "./open-router";
+import { getOpenAIConnectionListItem, OpenAIConnectionMethod, validateOpenAIConnectionCredentials } from "./openai";
 import { getOvhConnectionListItem, OVHConnectionMethod, validateOvhConnectionCredentials } from "./ovh";
+import {
+  getPaloAltoNetworksConnectionListItem,
+  PaloAltoNetworksConnectionMethod,
+  validatePaloAltoNetworksConnectionCredentials
+} from "./palo-alto-networks";
+import {
+  getPortainerConnectionListItem,
+  PortainerConnectionMethod,
+  validatePortainerConnectionCredentials
+} from "./portainer";
 import { getPostgresConnectionListItem, PostgresConnectionMethod } from "./postgres";
+import {
+  getPowerDnsConnectionListItem,
+  PowerDnsConnectionMethod,
+  validatePowerDnsConnectionCredentials
+} from "./powerdns";
 import { getQoveryConnectionListItem, QoveryConnectionMethod, validateQoveryConnectionCredentials } from "./qovery";
 import { getRailwayConnectionListItem, validateRailwayConnectionCredentials } from "./railway";
 import { getRedisConnectionListItem, RedisConnectionMethod, validateRedisConnectionCredentials } from "./redis";
 import { RenderConnectionMethod } from "./render/render-connection-enums";
 import { getRenderConnectionListItem, validateRenderConnectionCredentials } from "./render/render-connection-fns";
+import { getRundeckConnectionListItem, RundeckConnectionMethod, validateRundeckConnectionCredentials } from "./rundeck";
+import {
+  getS3CompatibleConnectionListItem,
+  S3CompatibleConnectionMethod,
+  validateS3CompatibleConnectionCredentials
+} from "./s3-compatible";
 import {
   getSalesforceConnectionListItem,
   SalesforceConnectionMethod,
@@ -227,7 +279,14 @@ import {
   SnowflakeConnectionMethod,
   validateSnowflakeConnectionCredentials
 } from "./snowflake";
+import {
+  getSpaceliftConnectionListItem,
+  SpaceliftConnectionMethod,
+  validateSpaceliftConnectionCredentials
+} from "./spacelift";
 import { getSshConnectionListItem, SshConnectionMethod, validateSshConnectionCredentials } from "./ssh";
+import { StripeConnectionMethod } from "./stripe";
+import { getStripeConnectionListItem, validateStripeConnectionCredentials } from "./stripe/stripe-connection-fns";
 import {
   getSupabaseConnectionListItem,
   SupabaseConnectionMethod,
@@ -253,6 +312,11 @@ import {
   TriggerDevConnectionMethod,
   validateTriggerDevConnectionCredentials
 } from "./trigger-dev";
+import { UltraDNSConnectionMethod } from "./ultradns/ultradns-connection-enum";
+import {
+  getUltraDNSConnectionListItem,
+  validateUltraDNSConnectionCredentials
+} from "./ultradns/ultradns-connection-fns";
 import { getVenafiConnectionListItem, validateVenafiConnectionCredentials, VenafiConnectionMethod } from "./venafi";
 import {
   getVenafiTppConnectionListItem,
@@ -267,6 +331,7 @@ import {
   validateWindmillConnectionCredentials,
   WindmillConnectionMethod
 } from "./windmill";
+import { getWinRMConnectionListItem, validateWinRMConnectionCredentials, WinRMConnectionMethod } from "./winrm";
 import { getZabbixConnectionListItem, validateZabbixConnectionCredentials, ZabbixConnectionMethod } from "./zabbix";
 
 const SECRET_SYNC_APP_CONNECTION_MAP = Object.fromEntries(
@@ -274,7 +339,7 @@ const SECRET_SYNC_APP_CONNECTION_MAP = Object.fromEntries(
 );
 
 const SECRET_ROTATION_APP_CONNECTION_MAP = Object.fromEntries(
-  Object.entries(SECRET_ROTATION_CONNECTION_MAP).map(([key, value]) => [value, key])
+  Object.values(SecretRotation).flatMap((type) => getSecretRotationConnectionApps(type).map((app) => [app, type]))
 );
 
 const SECRET_SCANNING_APP_CONNECTION_MAP = Object.fromEntries(
@@ -284,19 +349,59 @@ const SECRET_SCANNING_APP_CONNECTION_MAP = Object.fromEntries(
 // scott: ideally this would be derived from a utilized map like the above
 const PKI_APP_CONNECTIONS = [
   AppConnection.AWS,
+  AppConnection.GCP,
   AppConnection.Cloudflare,
   AppConnection.AzureADCS,
+  AppConnection.ADCS,
   AppConnection.AzureKeyVault,
   AppConnection.Chef,
   AppConnection.DNSMadeEasy,
+  AppConnection.UltraDNS,
   AppConnection.AzureDNS,
+  AppConnection.PowerDns,
   AppConnection.Venafi,
   AppConnection.VenafiTpp,
   AppConnection.NetScaler,
+  AppConnection.PaloAltoNetworks,
+  AppConnection.KempLoadMaster,
   AppConnection.DigiCert,
   AppConnection.F5BigIp,
-  AppConnection.GoDaddy
+  AppConnection.GoDaddy,
+  AppConnection.SSH,
+  AppConnection.WinRM,
+  AppConnection.LDAP,
+  AppConnection.NutanixPrismCentral,
+  AppConnection.MicrosoftIntune
 ];
+
+const AGENT_VAULT_APP_CONNECTIONS = [AppConnection.AWS];
+
+export const isAppConnectionAllowedInProject = (app: AppConnection, projectType?: ProjectType) => {
+  switch (projectType) {
+    case ProjectType.SecretManager:
+      return (
+        Boolean(SECRET_SYNC_APP_CONNECTION_MAP[app]) ||
+        Boolean(SECRET_ROTATION_APP_CONNECTION_MAP[app]) ||
+        EXTERNAL_MIGRATION_APP_CONNECTIONS.includes(app)
+      );
+    case ProjectType.SecretScanning:
+      return Boolean(SECRET_SCANNING_APP_CONNECTION_MAP[app]);
+    case ProjectType.CertificateManager:
+      return PKI_APP_CONNECTIONS.includes(app);
+    case ProjectType.KMS:
+      return false;
+    case ProjectType.PAM:
+      return false;
+    case ProjectType.AgentVault:
+      return AGENT_VAULT_APP_CONNECTIONS.includes(app);
+    default:
+      return true;
+  }
+};
+
+// Products whose allowed connection types are also enforced on create. Other products only use them to filter the picker.
+// Add a product only once nothing creates other connection types in it through the API.
+export const PROJECT_TYPES_ENFORCING_APP_CONNECTION_TYPES = [ProjectType.AgentVault];
 
 export const listAppConnectionOptions = (projectType?: ProjectType) => {
   return [
@@ -308,6 +413,8 @@ export const listAppConnectionOptions = (projectType?: ProjectType) => {
     getAzureAppConfigurationConnectionListItem(),
     getAzureDevopsConnectionListItem(),
     getAzureADCSConnectionListItem(),
+    getADCSConnectionListItem(),
+    getWinRMConnectionListItem(),
     getDatabricksConnectionListItem(),
     getHumanitecConnectionListItem(),
     getTerraformCloudConnectionListItem(),
@@ -326,6 +433,7 @@ export const listAppConnectionOptions = (projectType?: ProjectType) => {
     getOracleDBConnectionListItem(),
     getOnePassConnectionListItem(),
     getHerokuConnectionListItem(),
+    getHasuraCloudConnectionListItem(),
     getRenderConnectionListItem(),
     getLaravelForgeConnectionListItem(),
     getOctopusDeployConnectionListItem(),
@@ -334,6 +442,7 @@ export const listAppConnectionOptions = (projectType?: ProjectType) => {
     getGitLabConnectionListItem(),
     getCloudflareConnectionListItem(),
     getDNSMadeEasyConnectionListItem(),
+    getUltraDNSConnectionListItem(),
     getAzureDnsConnectionListItem(),
     getZabbixConnectionListItem(),
     getRailwayConnectionListItem(),
@@ -351,16 +460,20 @@ export const listAppConnectionOptions = (projectType?: ProjectType) => {
     getDbtConnectionListItem(),
     getSmbConnectionListItem(),
     getOpenRouterConnectionListItem(),
+    getOpenAIConnectionListItem(),
     getAnthropicConnectionListItem(),
     getDevinConnectionListItem(),
     getCircleCIConnectionListItem(),
     getCloud66ConnectionListItem(),
     getAzureEntraIdConnectionListItem(),
+    getMicrosoftIntuneConnectionListItem(),
     getVenafiConnectionListItem(),
     getVenafiTppConnectionListItem(),
     getExternalInfisicalConnectionListItem(),
     getDopplerConnectionListItem(),
     getNetScalerConnectionListItem(),
+    getPaloAltoNetworksConnectionListItem(),
+    getKempLoadMasterConnectionListItem(),
     getOvhConnectionListItem(),
     getOnaConnectionListItem(),
     getDigiCertConnectionListItem(),
@@ -371,30 +484,21 @@ export const listAppConnectionOptions = (projectType?: ProjectType) => {
     getDatadogConnectionListItem(),
     getF5BigIpConnectionListItem(),
     getConvexConnectionListItem(),
-    getQoveryConnectionListItem()
+    getRundeckConnectionListItem(),
+    getPortainerConnectionListItem(),
+    getQoveryConnectionListItem(),
+    getLiteLLMConnectionListItem(),
+    getFireworksConnectionListItem(),
+    getNutanixPrismCentralConnectionListItem(),
+    getPowerDnsConnectionListItem(),
+    getSpaceliftConnectionListItem(),
+    getDaytonaConnectionListItem(),
+    getStripeConnectionListItem(),
+    getKeeperConnectionListItem(),
+    getHpeIloConnectionListItem(),
+    getS3CompatibleConnectionListItem()
   ]
-    .filter((option) => {
-      switch (projectType) {
-        case ProjectType.SecretManager:
-          return (
-            Boolean(SECRET_SYNC_APP_CONNECTION_MAP[option.app]) ||
-            Boolean(SECRET_ROTATION_APP_CONNECTION_MAP[option.app]) ||
-            EXTERNAL_MIGRATION_APP_CONNECTIONS.includes(option.app)
-          );
-        case ProjectType.SecretScanning:
-          return Boolean(SECRET_SCANNING_APP_CONNECTION_MAP[option.app]);
-        case ProjectType.CertificateManager:
-          return PKI_APP_CONNECTIONS.includes(option.app);
-        case ProjectType.KMS:
-          return false;
-        case ProjectType.SSH:
-          return false;
-        case ProjectType.PAM:
-          return false;
-        default:
-          return true;
-      }
-    })
+    .filter((option) => isAppConnectionAllowedInProject(option.app, projectType))
     .sort((a, b) => a.name.localeCompare(b.name));
 };
 
@@ -518,7 +622,6 @@ export const decryptAppConnectionConfiguration = async ({
 
 export const validateAppConnectionCredentials = async (
   appConnection: TAppConnectionConfig,
-  gatewayService: Pick<TGatewayServiceFactory, "fnGetGatewayClientTlsByGatewayId">,
   gatewayV2Service: Pick<TGatewayV2ServiceFactory, "getPlatformConnectionDetailsByGatewayId">,
   deps: {
     identityUaDAL: Pick<TIdentityUaDALFactory, "findOne">;
@@ -531,8 +634,8 @@ export const validateAppConnectionCredentials = async (
   const VALIDATE_APP_CONNECTION_CREDENTIALS_MAP: Record<AppConnection, TAppConnectionCredentialsValidator> = {
     [AppConnection.AWS]: validateAwsConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.Databricks]: validateDatabricksConnectionCredentials as TAppConnectionCredentialsValidator,
-    [AppConnection.GitHub]: ((config: TAppConnectionConfig, gw, gw2) =>
-      validateGitHubConnectionCredentials(config as TGitHubConnectionConfig, gw, gw2, {
+    [AppConnection.GitHub]: ((config: TAppConnectionConfig, gw) =>
+      validateGitHubConnectionCredentials(config as TGitHubConnectionConfig, gw, {
         gitHubAppDAL: deps.gitHubAppDAL,
         kmsService: deps.kmsService
       })) as TAppConnectionCredentialsValidator,
@@ -545,6 +648,8 @@ export const validateAppConnectionCredentials = async (
       validateAzureClientSecretsConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.AzureDevOps]: validateAzureDevOpsConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.AzureADCS]: validateAzureADCSConnectionCredentials as TAppConnectionCredentialsValidator,
+    [AppConnection.ADCS]: validateADCSConnectionCredentials as TAppConnectionCredentialsValidator,
+    [AppConnection.WinRM]: validateWinRMConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.Humanitec]: validateHumanitecConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.Postgres]: validateSqlConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.MsSql]: validateSqlConnectionCredentials as TAppConnectionCredentialsValidator,
@@ -561,6 +666,7 @@ export const validateAppConnectionCredentials = async (
     [AppConnection.OracleDB]: validateSqlConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.OnePass]: validateOnePassConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.Heroku]: validateHerokuConnectionCredentials as TAppConnectionCredentialsValidator,
+    [AppConnection.HasuraCloud]: validateHasuraCloudConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.Render]: validateRenderConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.LaravelForge]: validateLaravelForgeConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.Flyio]: validateFlyioConnectionCredentials as TAppConnectionCredentialsValidator,
@@ -568,6 +674,7 @@ export const validateAppConnectionCredentials = async (
     [AppConnection.GitLab]: validateGitLabConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.Cloudflare]: validateCloudflareConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.DNSMadeEasy]: validateDNSMadeEasyConnectionCredentials as TAppConnectionCredentialsValidator,
+    [AppConnection.UltraDNS]: validateUltraDNSConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.AzureDNS]: validateAzureDnsConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.Zabbix]: validateZabbixConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.Railway]: validateRailwayConnectionCredentials as TAppConnectionCredentialsValidator,
@@ -586,11 +693,13 @@ export const validateAppConnectionCredentials = async (
     [AppConnection.Dbt]: validateDbtConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.SMB]: validateSmbConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.OpenRouter]: validateOpenRouterConnectionCredentials as TAppConnectionCredentialsValidator,
+    [AppConnection.OpenAI]: validateOpenAIConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.Anthropic]: validateAnthropicConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.Devin]: validateDevinConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.CircleCI]: validateCircleCIConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.Cloud66]: validateCloud66ConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.AzureEntraId]: validateAzureEntraIdConnectionCredentials as TAppConnectionCredentialsValidator,
+    [AppConnection.MicrosoftIntune]: validateMicrosoftIntuneConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.Venafi]: validateVenafiConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.VenafiTpp]: ((config: TAppConnectionConfig) =>
       validateVenafiTppConnectionCredentials(
@@ -598,6 +707,9 @@ export const validateAppConnectionCredentials = async (
         gatewayV2Service
       )) as TAppConnectionCredentialsValidator,
     [AppConnection.NetScaler]: validateNetScalerConnectionCredentials as TAppConnectionCredentialsValidator,
+    [AppConnection.PaloAltoNetworks]:
+      validatePaloAltoNetworksConnectionCredentials as TAppConnectionCredentialsValidator,
+    [AppConnection.KempLoadMaster]: validateKempLoadMasterConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.Ona]: validateOnaConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.TravisCI]: validateTravisCIConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.ExternalInfisical]: ((config: TAppConnectionConfig) =>
@@ -614,10 +726,23 @@ export const validateAppConnectionCredentials = async (
     [AppConnection.Datadog]: validateDatadogConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.F5BigIp]: validateF5BigIpConnectionCredentials as TAppConnectionCredentialsValidator,
     [AppConnection.Convex]: validateConvexConnectionCredentials as TAppConnectionCredentialsValidator,
-    [AppConnection.Qovery]: validateQoveryConnectionCredentials as TAppConnectionCredentialsValidator
+    [AppConnection.Rundeck]: validateRundeckConnectionCredentials as TAppConnectionCredentialsValidator,
+    [AppConnection.Portainer]: validatePortainerConnectionCredentials as TAppConnectionCredentialsValidator,
+    [AppConnection.Qovery]: validateQoveryConnectionCredentials as TAppConnectionCredentialsValidator,
+    [AppConnection.LiteLLM]: validateLiteLLMConnectionCredentials as TAppConnectionCredentialsValidator,
+    [AppConnection.Fireworks]: validateFireworksConnectionCredentials as TAppConnectionCredentialsValidator,
+    [AppConnection.NutanixPrismCentral]:
+      validateNutanixPrismCentralConnectionCredentials as TAppConnectionCredentialsValidator,
+    [AppConnection.PowerDns]: validatePowerDnsConnectionCredentials as TAppConnectionCredentialsValidator,
+    [AppConnection.Spacelift]: validateSpaceliftConnectionCredentials as TAppConnectionCredentialsValidator,
+    [AppConnection.Daytona]: validateDaytonaConnectionCredentials as TAppConnectionCredentialsValidator,
+    [AppConnection.Stripe]: validateStripeConnectionCredentials as TAppConnectionCredentialsValidator,
+    [AppConnection.Keeper]: validateKeeperConnectionCredentials as TAppConnectionCredentialsValidator,
+    [AppConnection.HpeIloRedFish]: validateHpeIloConnectionCredentials as TAppConnectionCredentialsValidator,
+    [AppConnection.S3Compatible]: validateS3CompatibleConnectionCredentials as TAppConnectionCredentialsValidator
   };
 
-  return VALIDATE_APP_CONNECTION_CREDENTIALS_MAP[appConnection.app](appConnection, gatewayService, gatewayV2Service);
+  return VALIDATE_APP_CONNECTION_CREDENTIALS_MAP[appConnection.app](appConnection, gatewayV2Service);
 };
 
 export const getAppConnectionMethodName = (method: TAppConnection["method"]) => {
@@ -638,11 +763,13 @@ export const getAppConnectionMethodName = (method: TAppConnection["method"]) => 
     case HerokuConnectionMethod.OAuth:
     case GitLabConnectionMethod.OAuth:
     case VenafiTppConnectionMethod.OAuth:
+    case StripeConnectionMethod.OAuth:
       return "OAuth";
     case HerokuConnectionMethod.AuthToken:
       return "Auth Token";
     case AwsConnectionMethod.AccessKey:
     case OCIConnectionMethod.AccessKey:
+    case S3CompatibleConnectionMethod.AccessKey:
       return "Access Key";
     case AwsConnectionMethod.AssumeRole:
       return "Assume Role";
@@ -666,17 +793,25 @@ export const getAppConnectionMethodName = (method: TAppConnection["method"]) => 
     case DbtConnectionMethod.ApiToken:
     case CircleCIConnectionMethod.ApiToken:
     case TravisCIConnectionMethod.ApiToken:
+    case RundeckConnectionMethod.ApiToken:
+    case PortainerConnectionMethod.ApiToken:
+    case DatadogConnectionMethod.Token:
       return "API Token";
     case DNSMadeEasyConnectionMethod.APIKeySecret:
+    case SpaceliftConnectionMethod.ApiKeySecret:
       return "API Key & Secret";
     case AzureDnsConnectionMethod.ClientSecret:
     case AzureEntraIdConnectionMethod.ClientSecret:
+    case MicrosoftIntuneConnectionMethod.ClientSecret:
       return "Client Secret";
     case PostgresConnectionMethod.UsernameAndPassword:
     case MsSqlConnectionMethod.UsernameAndPassword:
     case MySqlConnectionMethod.UsernameAndPassword:
     case OracleDBConnectionMethod.UsernameAndPassword:
+    case UltraDNSConnectionMethod.UsernamePassword:
     case AzureADCSConnectionMethod.UsernamePassword:
+    case ADCSConnectionMethod.UsernamePassword:
+    case WinRMConnectionMethod.UsernamePassword:
     case RedisConnectionMethod.UsernameAndPassword:
     case MongoDBConnectionMethod.UsernameAndPassword:
       return "Username & Password";
@@ -687,6 +822,7 @@ export const getAppConnectionMethodName = (method: TAppConnection["method"]) => 
     case TeamCityConnectionMethod.AccessToken:
     case AzureDevOpsConnectionMethod.AccessToken:
     case FlyioConnectionMethod.AccessToken:
+    case HasuraCloudConnectionMethod.AccessToken:
       return "Access Token";
     case Auth0ConnectionMethod.ClientCredentials:
     case SalesforceConnectionMethod.ClientCredentials:
@@ -706,12 +842,19 @@ export const getAppConnectionMethodName = (method: TAppConnection["method"]) => 
     case ChecklyConnectionMethod.ApiKey:
     case OctopusDeployConnectionMethod.ApiKey:
     case OpenRouterConnectionMethod.ApiKey:
+    case OpenAIConnectionMethod.ApiKey:
     case AnthropicConnectionMethod.ApiKey:
+    case LiteLLMConnectionMethod.ApiKey:
+    case FireworksConnectionMethod.ApiKey:
     case DevinConnectionMethod.ApiKey:
     case DigiCertConnectionMethod.ApiKey:
-    case DatadogConnectionMethod.ApiKey:
     case GoDaddyConnectionMethod.ApiKey:
     case TriggerDevConnectionMethod.ApiKey:
+    case DatadogConnectionMethod.ApiKey:
+    case NutanixPrismCentralConnectionMethod.ApiKey:
+    case PowerDnsConnectionMethod.ApiKey:
+    case DaytonaConnectionMethod.ApiKey:
+    case KeeperConnectionMethod.ApiKey:
       return "API Key";
     case ChefConnectionMethod.UserKey:
       return "User Key";
@@ -719,8 +862,11 @@ export const getAppConnectionMethodName = (method: TAppConnection["method"]) => 
     case SupabaseConnectionMethod.AccessToken:
       return "Access Token";
     case NetScalerConnectionMethod.BasicAuth:
-      return "Basic Auth";
+    case PaloAltoNetworksConnectionMethod.BasicAuth:
+    case KempLoadMasterConnectionMethod.BasicAuth:
     case F5BigIpConnectionMethod.BasicAuth:
+    case NutanixPrismCentralConnectionMethod.BasicAuth:
+    case HpeIloConnectionMethod.BasicAuth:
       return "Basic Auth";
     case ExternalInfisicalConnectionMethod.MachineIdentityUniversalAuth:
       return "Machine Identity - Universal Auth";
@@ -799,6 +945,8 @@ export const TRANSITION_CONNECTION_CREDENTIALS_TO_PLATFORM: Record<
   [AppConnection.AzureAppConfiguration]: platformManagedCredentialsNotSupported,
   [AppConnection.AzureDevOps]: platformManagedCredentialsNotSupported,
   [AppConnection.AzureADCS]: platformManagedCredentialsNotSupported,
+  [AppConnection.ADCS]: platformManagedCredentialsNotSupported,
+  [AppConnection.WinRM]: platformManagedCredentialsNotSupported,
   [AppConnection.Humanitec]: platformManagedCredentialsNotSupported,
   [AppConnection.Postgres]: transferSqlConnectionCredentialsToPlatform as TAppConnectionTransitionCredentialsToPlatform,
   [AppConnection.MsSql]: transferSqlConnectionCredentialsToPlatform as TAppConnectionTransitionCredentialsToPlatform,
@@ -816,12 +964,14 @@ export const TRANSITION_CONNECTION_CREDENTIALS_TO_PLATFORM: Record<
   [AppConnection.OracleDB]: transferSqlConnectionCredentialsToPlatform as TAppConnectionTransitionCredentialsToPlatform,
   [AppConnection.OnePass]: platformManagedCredentialsNotSupported,
   [AppConnection.Heroku]: platformManagedCredentialsNotSupported,
+  [AppConnection.HasuraCloud]: platformManagedCredentialsNotSupported,
   [AppConnection.Render]: platformManagedCredentialsNotSupported,
   [AppConnection.Flyio]: platformManagedCredentialsNotSupported,
   [AppConnection.TriggerDev]: platformManagedCredentialsNotSupported,
   [AppConnection.GitLab]: platformManagedCredentialsNotSupported,
   [AppConnection.Cloudflare]: platformManagedCredentialsNotSupported,
   [AppConnection.DNSMadeEasy]: platformManagedCredentialsNotSupported,
+  [AppConnection.UltraDNS]: platformManagedCredentialsNotSupported,
   [AppConnection.AzureDNS]: platformManagedCredentialsNotSupported,
   [AppConnection.Zabbix]: platformManagedCredentialsNotSupported,
   [AppConnection.Railway]: platformManagedCredentialsNotSupported,
@@ -841,15 +991,19 @@ export const TRANSITION_CONNECTION_CREDENTIALS_TO_PLATFORM: Record<
   [AppConnection.Dbt]: platformManagedCredentialsNotSupported,
   [AppConnection.SMB]: platformManagedCredentialsNotSupported,
   [AppConnection.OpenRouter]: platformManagedCredentialsNotSupported,
+  [AppConnection.OpenAI]: platformManagedCredentialsNotSupported,
   [AppConnection.Anthropic]: platformManagedCredentialsNotSupported,
   [AppConnection.Devin]: platformManagedCredentialsNotSupported,
   [AppConnection.CircleCI]: platformManagedCredentialsNotSupported,
   [AppConnection.Cloud66]: platformManagedCredentialsNotSupported,
   [AppConnection.AzureEntraId]: platformManagedCredentialsNotSupported,
+  [AppConnection.MicrosoftIntune]: platformManagedCredentialsNotSupported,
   [AppConnection.Venafi]: platformManagedCredentialsNotSupported,
   [AppConnection.VenafiTpp]: platformManagedCredentialsNotSupported,
   [AppConnection.ExternalInfisical]: platformManagedCredentialsNotSupported,
   [AppConnection.NetScaler]: platformManagedCredentialsNotSupported,
+  [AppConnection.PaloAltoNetworks]: platformManagedCredentialsNotSupported,
+  [AppConnection.KempLoadMaster]: platformManagedCredentialsNotSupported,
   [AppConnection.Doppler]: platformManagedCredentialsNotSupported,
   [AppConnection.OVH]: platformManagedCredentialsNotSupported,
   [AppConnection.Ona]: platformManagedCredentialsNotSupported,
@@ -861,7 +1015,19 @@ export const TRANSITION_CONNECTION_CREDENTIALS_TO_PLATFORM: Record<
   [AppConnection.F5BigIp]: platformManagedCredentialsNotSupported,
   [AppConnection.GoDaddy]: platformManagedCredentialsNotSupported,
   [AppConnection.Convex]: platformManagedCredentialsNotSupported,
-  [AppConnection.Qovery]: platformManagedCredentialsNotSupported
+  [AppConnection.Rundeck]: platformManagedCredentialsNotSupported,
+  [AppConnection.Portainer]: platformManagedCredentialsNotSupported,
+  [AppConnection.Qovery]: platformManagedCredentialsNotSupported,
+  [AppConnection.LiteLLM]: platformManagedCredentialsNotSupported,
+  [AppConnection.Fireworks]: platformManagedCredentialsNotSupported,
+  [AppConnection.NutanixPrismCentral]: platformManagedCredentialsNotSupported,
+  [AppConnection.PowerDns]: platformManagedCredentialsNotSupported,
+  [AppConnection.Spacelift]: platformManagedCredentialsNotSupported,
+  [AppConnection.Daytona]: platformManagedCredentialsNotSupported,
+  [AppConnection.Stripe]: platformManagedCredentialsNotSupported,
+  [AppConnection.Keeper]: platformManagedCredentialsNotSupported,
+  [AppConnection.HpeIloRedFish]: platformManagedCredentialsNotSupported,
+  [AppConnection.S3Compatible]: platformManagedCredentialsNotSupported
 };
 
 export const enterpriseAppCheck = async (

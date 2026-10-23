@@ -17,64 +17,106 @@ tables:
       - editedByUserId
       - editNote
 
-  - name: ai_mcp_activity_logs
-    source: public.ai_mcp_activity_logs
-    columns:
-      - id
-      - projectId
-      - endpointName
-      - serverName
-      - toolName
-      - actor
-      - createdAt
-      - updatedAt
-
-  - name: ai_mcp_endpoint_server_tools
-    source: public.ai_mcp_endpoint_server_tools
-    columns:
-      - id
-      - aiMcpEndpointId
-      - aiMcpServerToolId
-      - isEnabled
-
-  - name: ai_mcp_endpoint_servers
-    source: public.ai_mcp_endpoint_servers
-    columns:
-      - id
-      - aiMcpEndpointId
-      - aiMcpServerId
-
-  - name: ai_mcp_endpoints
-    source: public.ai_mcp_endpoints
+  - name: additional_privileges
+    source: public.additional_privileges
     columns:
       - id
       - name
-      - description
-      - status
+      - isTemporary
+      - temporaryMode
+      - temporaryRange
+      - temporaryAccessStartTime
+      - temporaryAccessEndTime
+      - actorUserId
+      - actorIdentityId
+      - orgId
       - projectId
       - createdAt
       - updatedAt
 
-  - name: ai_mcp_server_tools
-    source: public.ai_mcp_server_tools
+  - name: agent_vault_access_bundles
+    source: public.agent_vault_access_bundles
     columns:
       - id
-      - name
-      - description
-      - inputSchema
-      - aiMcpServerId
-
-  - name: ai_mcp_servers
-    source: public.ai_mcp_servers
-    columns:
-      - id
-      - name
-      - url
-      - description
-      - status
-      - credentialMode
-      - authMethod
       - projectId
+      - name
+      - createdAt
+      - updatedAt
+
+  - name: agent_vault_proxies
+    source: public.agent_vault_proxies
+    columns:
+      - id
+      - projectId
+      - heartbeat
+      - heartbeatTTL
+      - pollInterval
+      - trafficPolicy
+      - createdAt
+      - updatedAt
+
+  - name: agent_vault_service_custom_headers
+    source: public.agent_vault_service_custom_headers
+    columns:
+      - id
+      - serviceId
+      - createdAt
+
+  - name: agent_vault_service_substitutions
+    source: public.agent_vault_service_substitutions
+    columns:
+      - id
+      - serviceId
+      - createdAt
+
+  - name: agent_vault_services
+    source: public.agent_vault_services
+    columns:
+      - id
+      - accessBundleId
+      - hostPattern
+      - credentialType
+      - allowedMethods
+      - allowedPathPrefixes
+      - createdAt
+      - updatedAt
+
+  - name: agent_vault_session_access_bundles
+    source: public.agent_vault_session_access_bundles
+    columns:
+      - id
+      - sessionId
+      - accessBundleId
+      - createdAt
+
+  - name: agent_vault_session_log_configs
+    source: public.agent_vault_session_log_configs
+    columns:
+      - id
+      - projectId
+      - enabled
+      - createdAt
+      - updatedAt
+
+  - name: agent_vault_sessions
+    source: public.agent_vault_sessions
+    columns:
+      - id
+      - projectId
+      - userId
+      - identityId
+      - actorType
+      - expiresAt
+      - revokedAt
+      - createdAt
+      - updatedAt
+
+  - name: agent_vault_variables
+    source: public.agent_vault_variables
+    columns:
+      - id
+      - projectId
+      - accessBundleId
       - createdAt
       - updatedAt
 
@@ -247,6 +289,8 @@ tables:
       - relayId
       - name
       - heartbeat
+      - directAddress
+      - directHeartbeat
       - healthAlertedAt
 
   - name: groups
@@ -393,6 +437,7 @@ tables:
       - accessTokenPeriod
       - tokenReviewMode
       - gatewayV2Id
+      - templateId
 
   - name: identity_ldap_auths
     source: public.identity_ldap_auths
@@ -450,6 +495,7 @@ tables:
       - updatedAt
       - claimMetadataMapping
       - accessTokenPeriod
+      - templateId
 
   - name: identity_tls_cert_auths
     source: public.identity_tls_cert_auths
@@ -707,7 +753,6 @@ tables:
       - secretsProductEnabled
       - pkiProductEnabled
       - kmsProductEnabled
-      - sshProductEnabled
       - scannerProductEnabled
       - shareSecretsProductEnabled
       - maxSharedSecretLifetime
@@ -717,6 +762,7 @@ tables:
       - parentOrgId
       - rootOrgId
       - blockDuplicateSecretSyncDestinations
+      - requireGatewayPools
 
   - name: pam_accounts
     source: public.pam_accounts
@@ -749,7 +795,6 @@ tables:
       - id
       - projectId
       - accountId
-      - resourceType
       - resourceName
       - accountName
       - userId
@@ -908,20 +953,6 @@ tables:
       - showSnapshotsLegacy
       - defaultProduct
       - secretDetectionIgnoreValues
-
-  - name: rate_limit
-    source: public.rate_limit
-    columns:
-      - id
-      - readRateLimit
-      - writeRateLimit
-      - secretsRateLimit
-      - authRateLimit
-      - inviteUserRateLimit
-      - mfaRateLimit
-      - publicEndpointLimit
-      - createdAt
-      - updatedAt
 
   - name: relays
     source: public.relays
@@ -1089,22 +1120,25 @@ tables:
       - createdAt
       - updatedAt
       - isDisconnected
+      - isHistoricalScanEnabled
+      - isScanNewCommitsEnabled
+      - isDiscoveryEnabled
 
   - name: secret_scanning_findings
     source: public.secret_scanning_findings
     columns:
       - id
-      - dataSourceName
-      - dataSourceType
-      - resourceName
-      - resourceType
+      - resourceId
       - rule
       - severity
+      - confidence
       - status
-      - remarks
+      - triageComment
+      - triagedByUserId
+      - triagedAt
+      - resolvedAt
       - fingerprint
       - details
-      - projectId
       - scanId
       - createdAt
       - updatedAt
@@ -1135,7 +1169,6 @@ tables:
       - id
       - externalId
       - name
-      - type
       - dataSourceId
       - createdAt
       - updatedAt
@@ -1247,57 +1280,6 @@ tables:
       - projectId
       - expiryNotificationSent
 
-  - name: ssh_certificate_authorities
-    source: public.ssh_certificate_authorities
-    columns:
-      - id
-      - createdAt
-      - updatedAt
-      - projectId
-      - status
-      - friendlyName
-      - keyAlgorithm
-      - keySource
-
-  - name: ssh_certificates
-    source: public.ssh_certificates
-    columns:
-      - id
-      - createdAt
-      - updatedAt
-      - sshCaId
-      - sshCertificateTemplateId
-      - serialNumber
-      - certType
-      - principals
-      - keyId
-      - notBefore
-      - notAfter
-      - sshHostId
-
-  - name: ssh_host_groups
-    source: public.ssh_host_groups
-    columns:
-      - id
-      - createdAt
-      - updatedAt
-      - projectId
-      - name
-
-  - name: ssh_hosts
-    source: public.ssh_hosts
-    columns:
-      - id
-      - createdAt
-      - updatedAt
-      - projectId
-      - hostname
-      - userCertTtl
-      - hostCertTtl
-      - userSshCaId
-      - hostSshCaId
-      - alias
-
   - name: user_group_membership
     source: public.user_group_membership
     columns:
@@ -1319,7 +1301,6 @@ tables:
       - lastName
       - isAccepted
       - isMfaEnabled
-      - mfaMethods
       - devices
       - createdAt
       - updatedAt
@@ -1362,3 +1343,16 @@ tables:
       - orgId
       - projectId
       - projectName
+
+  - name: audit_log_streams
+    source: public.audit_log_streams
+    columns:
+      - id
+      - orgId
+      - createdAt
+      - updatedAt
+      - provider
+      - streamMode
+      - filters
+      - failingSince
+      - lastDeliveryError

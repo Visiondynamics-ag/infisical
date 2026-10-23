@@ -1,10 +1,10 @@
-// eslint-disable-next-line
-import "ts-node/register";
-
 import dotenv from "dotenv";
 import type { Knex } from "knex";
 import path from "path";
+
 import { initLogger } from "@app/lib/logger";
+
+import { DbApplicationName } from "./instance";
 
 // Update with your config settings. .
 dotenv.config({
@@ -31,7 +31,8 @@ export default {
             rejectUnauthorized: true,
             ca: Buffer.from(process.env.DB_ROOT_CERT, "base64").toString("ascii")
           }
-        : false
+        : false,
+      application_name: DbApplicationName.Migrator
     },
     pool: {
       min: 2,
@@ -59,7 +60,8 @@ export default {
             rejectUnauthorized: true,
             ca: Buffer.from(process.env.DB_ROOT_CERT, "base64").toString("ascii")
           }
-        : false
+        : false,
+      application_name: DbApplicationName.Migrator
     },
     pool: {
       min: 2,

@@ -1,5 +1,6 @@
 import {
   AsymmetricKeyAlgorithm,
+  HmacAlgorithm,
   KmsKeyUsage,
   SigningAlgorithm,
   SymmetricKeyAlgorithm,
@@ -21,22 +22,39 @@ export const kmsKeyUsageOptions: Record<
     label: "Sign/Verify",
     tooltip:
       "Key pairs for digital signing. Uses the private key for signing and the public key for verification."
+  },
+  [KmsKeyUsage.GENERATE_VERIFY_MAC]: {
+    label: "Generate/Verify MAC",
+    tooltip:
+      "Symmetric HMAC keys for generating and verifying hash-based message authentication codes (MACs)."
   }
 };
 
 export const keyUsageDefaultOption: Record<
   KmsKeyUsage,
-  SymmetricKeyAlgorithm | AsymmetricKeyAlgorithm
+  SymmetricKeyAlgorithm | AsymmetricKeyAlgorithm | HmacAlgorithm
 > = {
   [KmsKeyUsage.ENCRYPT_DECRYPT]: SymmetricKeyAlgorithm.AES_GCM_256,
-  [KmsKeyUsage.SIGN_VERIFY]: AsymmetricKeyAlgorithm.RSA_4096
+  [KmsKeyUsage.SIGN_VERIFY]: AsymmetricKeyAlgorithm.RSA_4096,
+  [KmsKeyUsage.GENERATE_VERIFY_MAC]: HmacAlgorithm.HMAC_SHA_256
 };
 
+export const formatKmsKeyAlgorithm = (algorithm: string): string =>
+  algorithm.replaceAll("_", "-").toUpperCase();
+
+export const getAllowedSigningAlgorithms = (cmek: TCmek): SigningAlgorithm[] =>
+  Object.values(SigningAlgorithm).filter((a) => {
+    if (cmek?.algorithm?.startsWith("ML_DSA") || cmek?.algorithm === AsymmetricKeyAlgorithm.ED25519)
+      return (a as string) === (cmek.algorithm as string);
+    if (cmek?.algorithm?.startsWith("RSA")) return a.toLowerCase().startsWith("rsa");
+    return a.toLowerCase().startsWith("ecdsa");
+  });
+
 export const getDefaultSigningAlgorithm = (cmek: TCmek): SigningAlgorithm => {
-  if (cmek?.encryptionAlgorithm?.startsWith("ML_DSA")) {
-    return cmek.encryptionAlgorithm as unknown as SigningAlgorithm;
+  if (cmek?.algorithm?.startsWith("ML_DSA") || cmek?.algorithm === AsymmetricKeyAlgorithm.ED25519) {
+    return cmek.algorithm as unknown as SigningAlgorithm;
   }
-  if (cmek?.encryptionAlgorithm?.startsWith("RSA")) {
+  if (cmek?.algorithm?.startsWith("RSA")) {
     return SigningAlgorithm.RSASSA_PSS_SHA_512;
   }
   return SigningAlgorithm.ECDSA_SHA_256;

@@ -6,7 +6,6 @@ import {
   CertRequestRequestGrantSchema,
   CertRequestRequestSchema,
   CreateCertRequestPolicySchema,
-  CreateCertRequestRequestSchema,
   UpdateCertRequestPolicySchema
 } from "@app/services/approval-policy/cert-request/cert-request-policy-schemas";
 import {
@@ -28,12 +27,12 @@ import {
   PamAccessRequestSchema,
   UpdatePamAccessPolicySchema
 } from "@app/services/approval-policy/pam-access/pam-access-policy-schemas";
+import { AuthMode } from "@app/services/auth/auth-type";
 
 import { registerApprovalPolicyEndpoints } from "./approval-policy-endpoints";
 
-export const APPROVAL_POLICY_REGISTER_ROUTER_MAP: Record<
-  ApprovalPolicyType,
-  (server: FastifyZodProvider) => Promise<void>
+export const APPROVAL_POLICY_REGISTER_ROUTER_MAP: Partial<
+  Record<ApprovalPolicyType, (server: FastifyZodProvider) => Promise<void>>
 > = {
   [ApprovalPolicyType.PamAccess]: async (server: FastifyZodProvider) => {
     registerApprovalPolicyEndpoints({
@@ -46,7 +45,8 @@ export const APPROVAL_POLICY_REGISTER_ROUTER_MAP: Record<
       requestResponseSchema: PamAccessRequestSchema,
       grantResponseSchema: PamAccessRequestGrantSchema,
       inputsSchema: PamAccessPolicyInputsSchema,
-      checkPolicyMatchResponseSchema: PamAccessCheckPolicyMatchResponseSchema
+      checkPolicyMatchResponseSchema: PamAccessCheckPolicyMatchResponseSchema,
+      requestAuthModes: [AuthMode.JWT, AuthMode.OAUTH]
     });
   },
   [ApprovalPolicyType.CertRequest]: async (server: FastifyZodProvider) => {
@@ -56,11 +56,17 @@ export const APPROVAL_POLICY_REGISTER_ROUTER_MAP: Record<
       createPolicySchema: CreateCertRequestPolicySchema,
       updatePolicySchema: UpdateCertRequestPolicySchema,
       policyResponseSchema: CertRequestPolicySchema,
-      createRequestSchema: CreateCertRequestRequestSchema,
       requestResponseSchema: CertRequestRequestSchema,
       grantResponseSchema: CertRequestRequestGrantSchema,
       inputsSchema: CertRequestPolicyInputsSchema,
-      checkPolicyMatchResponseSchema: BaseCheckPolicyMatchResponseSchema
+      checkPolicyMatchResponseSchema: BaseCheckPolicyMatchResponseSchema,
+      // Certificate approval requests are only ever opened server-side by the issuance flow
+      // (certificate-v3-service -> createRequestFromPolicy), atomically with the certificate
+      // request row they gate. There is no caller-driven path: a request cannot be opened
+      // before its certificate request row exists, and once it exists the row already carries
+      // its own approval request. Exposing creation would let a caller pick which policy gates
+      // a certificate request they did not create, so it stays off.
+      allowRequestCreation: false
     });
   },
   [ApprovalPolicyType.CertCodeSigning]: async (server: FastifyZodProvider) => {

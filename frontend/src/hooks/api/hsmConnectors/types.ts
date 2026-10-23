@@ -56,11 +56,26 @@ export type THsmConnectorTestResult = {
   members: THsmConnectorTestMemberResult[];
 };
 
+export type THsmConnectorKey = {
+  keyId: string;
+  keyAlgorithm: string;
+};
+
 export type THsmConnectorLinkedCertificate = {
   id: string;
   commonName: string;
   status: CertStatus;
   notAfter: string;
+  hsmKeyLabel: string | null;
+  createdAt: string;
+};
+
+export type THsmConnectorLinkedCertificateAuthority = {
+  id: string;
+  name: string;
+  commonName: string | null;
+  status: string;
+  type: string;
   hsmKeyLabel: string | null;
   createdAt: string;
 };

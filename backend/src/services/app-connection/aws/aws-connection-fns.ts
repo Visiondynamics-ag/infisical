@@ -1,4 +1,10 @@
-import { AssumeRoleCommand, GetCallerIdentityCommand, STSClient, STSServiceException } from "@aws-sdk/client-sts";
+import {
+  AssumeRoleCommand,
+  GetCallerIdentityCommand,
+  STSClient,
+  STSClientConfig,
+  STSServiceException
+} from "@aws-sdk/client-sts";
 import { AxiosError } from "axios";
 
 import { ProjectType } from "@app/db/schemas";
@@ -65,7 +71,11 @@ export const getAwsConnectionListItem = () => {
   };
 };
 
-export const getAwsConnectionConfig = async (appConnection: TAwsConnectionConfig, region = AWSRegion.US_EAST_1) => {
+export const getAwsConnectionConfig = async (
+  appConnection: TAwsConnectionConfig,
+  region = AWSRegion.US_EAST_1,
+  { stsRequestHandler }: { stsRequestHandler?: STSClientConfig["requestHandler"] } = {}
+) => {
   const appCfg = getConfig();
 
   let accessKeyId: string;
@@ -94,17 +104,21 @@ export const getAwsConnectionConfig = async (appConnection: TAwsConnectionConfig
                 accessKeyId: appCfg.INF_APP_CONNECTION_AWS_ACCESS_KEY_ID,
                 secretAccessKey: appCfg.INF_APP_CONNECTION_AWS_SECRET_ACCESS_KEY
               }
-            : undefined // if hosting on AWS
+            : undefined, // if hosting on AWS
+        ...(stsRequestHandler ? { requestHandler: stsRequestHandler } : {})
       });
 
       // v1 (legacy) always used orgId; v2+ uses projectId when available, orgId otherwise.
       // Certificate Manager connections try orgId first (the recommended ExternalID),
       // then fall back to projectId for backwards compatibility with existing trust policies.
+      // Agent Vault's project is implicit and never shown to users, so its connections use orgId.
       const externalIds: string[] = [];
       if ((version ?? 1) >= 2) {
         if (projectType === ProjectType.CertificateManager) {
           externalIds.push(orgId);
           if (projectId && projectId !== orgId) externalIds.push(projectId);
+        } else if (projectType === ProjectType.AgentVault) {
+          externalIds.push(orgId);
         } else {
           externalIds.push(projectId ?? orgId);
         }
@@ -226,4 +240,26 @@ export const validateAwsConnectionCredentials = async (appConnection: TAwsConnec
   }
 
   return appConnection.credentials;
+};
+
+export const getAwsAccountId = async (appConnection: TAwsConnectionConfig): Promise<string | null> => {
+  try {
+    const awsConfig = await getAwsConnectionConfig(appConnection);
+
+    const stsEndpoint =
+      appConnection.method === AwsConnectionMethod.AssumeRole ? appConnection.credentials.stsEndpoint : undefined;
+    const stsRegion = getStsSigningRegion(stsEndpoint);
+
+    const sts = new STSClient({
+      region: stsRegion.region ?? awsConfig.region,
+      credentials: awsConfig.credentials,
+      ...(stsEndpoint && stsRegion.isValidEndpoint ? { endpoint: stsEndpoint } : {})
+    });
+
+    const response = await sts.send(new GetCallerIdentityCommand({}));
+    return response.Account ?? null;
+  } catch (error) {
+    logger.error(error, "Failed to retrieve AWS account ID via STS");
+    return null;
+  }
 };

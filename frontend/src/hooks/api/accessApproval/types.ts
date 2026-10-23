@@ -18,6 +18,7 @@ export type TAccessApprovalPolicy = {
   approvers?: Approver[];
   bypassers?: Bypasser[];
   allowedSelfApprovals: boolean;
+  bypassForMachineIdentities?: boolean;
   maxTimePeriod?: string | null;
   requestExpirationTime?: string | null;
 };
@@ -46,9 +47,33 @@ export type Bypasser = {
   type: BypasserType;
 };
 
+export type TApprovalPolicyApproverInput =
+  | {
+      type: "user";
+      id?: string;
+      username?: string;
+      sequence?: number;
+    }
+  | {
+      type: "group";
+      id: string;
+      sequence?: number;
+    };
+
+export type TApprovalPolicyBypasserInput =
+  | {
+      type: "user";
+      id?: string;
+      username?: string;
+    }
+  | {
+      type: "group";
+      id: string;
+    };
+
 export type TAccessApprovalRequest = {
   id: string;
-  policyId: string;
+  policyId: string | null;
   privilegeId: string | null;
   requestedByUserId: string;
   requestedByUser: {
@@ -83,7 +108,7 @@ export type TAccessApprovalRequest = {
   // Set when the request was approved via break-glass without the required reviews.
   bypassReason?: string | null;
   policy: {
-    id: string;
+    id: string | null;
     name: string;
     approvals: number;
     approvers: {
@@ -175,13 +200,6 @@ export type TCreateAccessRequestDTO = {
   note?: string;
 } & Omit<TProjectUserPrivilege, "id" | "createdAt" | "updatedAt" | "slug" | "projectMembershipId">;
 
-export type TUpdateAccessRequestDTO = {
-  requestId: string;
-  editNote: string;
-  temporaryRange: string;
-  projectSlug: string;
-};
-
 export type TGetAccessApprovalRequestsDTO = {
   projectSlug: string;
   policyId?: string;
@@ -204,8 +222,8 @@ export type TCreateAccessPolicyDTO = {
   projectSlug: string;
   name?: string;
   environments: string[];
-  approvers?: Omit<Approver, "isOrgMembershipActive">[];
-  bypassers?: Bypasser[];
+  approvers?: TApprovalPolicyApproverInput[];
+  bypassers?: TApprovalPolicyBypasserInput[];
   approvals?: number;
   secretPath: string;
   enforcementLevel?: EnforcementLevel;
@@ -218,8 +236,8 @@ export type TCreateAccessPolicyDTO = {
 export type TUpdateAccessPolicyDTO = {
   id: string;
   name?: string;
-  approvers?: Omit<Approver, "isOrgMembershipActive">[];
-  bypassers?: Bypasser[];
+  approvers?: TApprovalPolicyApproverInput[];
+  bypassers?: TApprovalPolicyBypasserInput[];
   secretPath?: string;
   environments?: string[];
   approvals?: number;

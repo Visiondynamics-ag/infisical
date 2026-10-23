@@ -1,12 +1,17 @@
 import { Knex } from "knex";
 
 import { TDbClient } from "@app/db";
-import { RESOURCE_SCOPE, TableName, TMemberships } from "@app/db/schemas";
+import { AccessScope, RESOURCE_SCOPE, TableName, TMemberships } from "@app/db/schemas";
 import { DatabaseError } from "@app/lib/errors";
-import { ormify } from "@app/lib/knex";
+import { ormify, selectAllTableCols } from "@app/lib/knex";
 import { ActorType } from "@app/services/auth/auth-type";
 
 export type TMembershipDALFactory = ReturnType<typeof membershipDALFactory>;
+
+export type TResourceMembershipForActor = TMemberships & {
+  forActorType: ActorType.USER | ActorType.IDENTITY;
+  forActorId: string;
+};
 
 export const membershipDALFactory = (db: TDbClient) => {
   const orm = ormify(db, TableName.Membership);
@@ -54,6 +59,89 @@ export const membershipDALFactory = (db: TDbClient) => {
     }
   };
 
+  // Batched form of findResourceMembershipsForActor: a fixed number of queries for any number of actors,
+  // for callers that would otherwise loop. A group's row comes back once per actor inheriting through it,
+  // tagged with that actor, so the caller buckets rows without resolving group membership itself.
+  const findResourceMembershipsForActors = async (
+    {
+      projectId,
+      resourceTypes,
+      userIds,
+      identityIds
+    }: {
+      projectId: string;
+      resourceTypes: string[];
+      userIds: string[];
+      identityIds: string[];
+    },
+    tx?: Knex
+  ): Promise<TResourceMembershipForActor[]> => {
+    if (!resourceTypes.length || (!userIds.length && !identityIds.length)) return [];
+
+    try {
+      const conn = tx || db.replicaNode();
+      const scoped = () =>
+        conn(TableName.Membership)
+          .where(`${TableName.Membership}.scope`, RESOURCE_SCOPE)
+          .where(`${TableName.Membership}.scopeProjectId`, projectId)
+          .whereIn(`${TableName.Membership}.scopeResourceType`, resourceTypes);
+
+      const rows: TResourceMembershipForActor[] = [];
+
+      if (userIds.length) {
+        const direct = (await scoped()
+          .whereIn(`${TableName.Membership}.actorUserId`, userIds)
+          .select(selectAllTableCols(TableName.Membership))) as TMemberships[];
+        rows.push(
+          ...direct.map((row) => ({ ...row, forActorType: ActorType.USER as const, forActorId: row.actorUserId! }))
+        );
+
+        const viaGroups = (await scoped()
+          .join(
+            TableName.UserGroupMembership,
+            `${TableName.UserGroupMembership}.groupId`,
+            `${TableName.Membership}.actorGroupId`
+          )
+          .whereIn(`${TableName.UserGroupMembership}.userId`, userIds)
+          .select(selectAllTableCols(TableName.Membership))
+          .select(db.ref("userId").withSchema(TableName.UserGroupMembership).as("forActorId"))) as (TMemberships & {
+          forActorId: string;
+        })[];
+        rows.push(...viaGroups.map((row) => ({ ...row, forActorType: ActorType.USER as const })));
+      }
+
+      if (identityIds.length) {
+        const direct = (await scoped()
+          .whereIn(`${TableName.Membership}.actorIdentityId`, identityIds)
+          .select(selectAllTableCols(TableName.Membership))) as TMemberships[];
+        rows.push(
+          ...direct.map((row) => ({
+            ...row,
+            forActorType: ActorType.IDENTITY as const,
+            forActorId: row.actorIdentityId!
+          }))
+        );
+
+        const viaGroups = (await scoped()
+          .join(
+            TableName.IdentityGroupMembership,
+            `${TableName.IdentityGroupMembership}.groupId`,
+            `${TableName.Membership}.actorGroupId`
+          )
+          .whereIn(`${TableName.IdentityGroupMembership}.identityId`, identityIds)
+          .select(selectAllTableCols(TableName.Membership))
+          .select(
+            db.ref("identityId").withSchema(TableName.IdentityGroupMembership).as("forActorId")
+          )) as (TMemberships & { forActorId: string })[];
+        rows.push(...viaGroups.map((row) => ({ ...row, forActorType: ActorType.IDENTITY as const })));
+      }
+
+      return rows;
+    } catch (error) {
+      throw new DatabaseError({ error, name: "Find resource memberships for actors" });
+    }
+  };
+
   const findResourceMembershipsForGroup = async (
     { projectId, resourceType, groupId }: { projectId: string; resourceType: string; groupId: string },
     tx?: Knex
@@ -71,5 +159,79 @@ export const membershipDALFactory = (db: TDbClient) => {
     }
   };
 
-  return { ...orm, findResourceMembershipsForActor, findResourceMembershipsForGroup };
+  // Locks the row so a concurrent deactivation or removal of the same membership serializes behind the
+  // caller. Always reads the primary, so it also bypasses the cached permission blob.
+  const lockOrgMembershipForUser = async (
+    orgId: string,
+    userId: string,
+    tx: Knex
+  ): Promise<TMemberships | undefined> => {
+    try {
+      return await tx(TableName.Membership)
+        .where({ scope: AccessScope.Organization, scopeOrgId: orgId, actorUserId: userId })
+        .select(selectAllTableCols(TableName.Membership))
+        .forUpdate()
+        .first();
+    } catch (error) {
+      throw new DatabaseError({ error, name: "LockOrgMembershipForUser" });
+    }
+  };
+
+  // Same as lockOrgMembershipForUser, for an actor's direct membership on one resource.
+  const lockResourceMembershipForActor = async (
+    {
+      projectId,
+      resourceType,
+      resourceId,
+      actorType,
+      actorId
+    }: {
+      projectId: string;
+      resourceType: string;
+      resourceId: string;
+      actorType: ActorType;
+      actorId: string;
+    },
+    tx: Knex
+  ): Promise<TMemberships | undefined> => {
+    try {
+      return await tx(TableName.Membership)
+        .where({
+          scope: RESOURCE_SCOPE,
+          scopeProjectId: projectId,
+          scopeResourceType: resourceType,
+          scopeResourceId: resourceId,
+          ...(actorType === ActorType.USER ? { actorUserId: actorId } : { actorIdentityId: actorId })
+        })
+        .select(selectAllTableCols(TableName.Membership))
+        .forUpdate()
+        .first();
+    } catch (error) {
+      throw new DatabaseError({ error, name: "LockResourceMembershipForActor" });
+    }
+  };
+
+  // For deletes that must take the membership row lock before touching its roles, the same order
+  // lockResourceMembershipForActor callers use, so the two can't deadlock.
+  const lockById = async (id: string, tx: Knex): Promise<TMemberships | undefined> => {
+    try {
+      return await tx(TableName.Membership)
+        .where({ id })
+        .select(selectAllTableCols(TableName.Membership))
+        .forUpdate()
+        .first();
+    } catch (error) {
+      throw new DatabaseError({ error, name: "LockMembershipById" });
+    }
+  };
+
+  return {
+    ...orm,
+    lockById,
+    findResourceMembershipsForActor,
+    findResourceMembershipsForActors,
+    findResourceMembershipsForGroup,
+    lockOrgMembershipForUser,
+    lockResourceMembershipForActor
+  };
 };

@@ -1,13 +1,16 @@
 import { ForbiddenError, subject } from "@casl/ability";
 
 import { ActionProjectType } from "@app/db/schemas";
+import { TLicenseServiceFactory } from "@app/ee/services/license/license-service";
 import { TPermissionServiceFactory } from "@app/ee/services/permission/permission-service-types";
 import {
   ProjectPermissionCertificateAuthorityActions,
   ProjectPermissionSub
 } from "@app/ee/services/permission/project-permission";
 import { BadRequestError, NotFoundError } from "@app/lib/errors";
-import { TAppConnectionDALFactory } from "@app/services/app-connection/app-connection-dal";
+import { OrgServiceActor } from "@app/lib/types";
+import { AppConnection } from "@app/services/app-connection/app-connection-enums";
+import { TAppConnectionServiceFactory } from "@app/services/app-connection/app-connection-service";
 import { ActorAuthMethod, ActorType } from "@app/services/auth/auth-type";
 
 import { TCaAutoRenewalQueueFactory } from "../ca-auto-renewal-queue";
@@ -17,7 +20,9 @@ import { TInternalCertificateAuthorityDALFactory } from "../internal/internal-ce
 import { TCaSigningConfigDALFactory } from "./ca-signing-config-dal";
 import { CaSigningConfigType } from "./ca-signing-config-enums";
 import {
+  AdcsDestinationConfigSchema,
   AzureAdCsDestinationConfigSchema,
+  TAdcsDestinationConfig,
   TAzureAdCsDestinationConfig,
   TCreateCaSigningConfigDTO,
   TGetCaSigningConfigDTO,
@@ -25,6 +30,15 @@ import {
   TVenafiDestinationConfig,
   VenafiDestinationConfigSchema
 } from "./ca-signing-config-types";
+
+const CA_SIGNING_CONFIG_CONNECTION_MAP: Partial<Record<CaSigningConfigType, AppConnection>> = {
+  [CaSigningConfigType.Venafi]: AppConnection.Venafi,
+  [CaSigningConfigType.AzureAdCs]: AppConnection.AzureADCS,
+  [CaSigningConfigType.Adcs]: AppConnection.ADCS
+};
+
+// Signing through a third-party provider is the same capability as connecting one as an external CA.
+const EXTERNAL_SIGNING_TYPES: string[] = Object.keys(CA_SIGNING_CONFIG_CONNECTION_MAP);
 
 type TCaSigningConfigServiceFactoryDep = {
   caSigningConfigDAL: Pick<
@@ -34,8 +48,12 @@ type TCaSigningConfigServiceFactoryDep = {
   certificateAuthorityDAL: Pick<TCertificateAuthorityDALFactory, "findById" | "findByIdWithAssociatedCa">;
   internalCertificateAuthorityDAL: Pick<TInternalCertificateAuthorityDALFactory, "findOne" | "updateById">;
   permissionService: Pick<TPermissionServiceFactory, "getProjectPermission">;
-  appConnectionDAL: Pick<TAppConnectionDALFactory, "findById">;
-  caAutoRenewalQueue: Pick<TCaAutoRenewalQueueFactory, "queueVenafiInstall" | "queueAdcsInstall">;
+  licenseService: Pick<TLicenseServiceFactory, "getPlan">;
+  appConnectionService: Pick<TAppConnectionServiceFactory, "validateAppConnectionUsageById">;
+  caAutoRenewalQueue: Pick<
+    TCaAutoRenewalQueueFactory,
+    "queueVenafiInstall" | "queueAdcsInstall" | "queueNativeAdcsInstall"
+  >;
 };
 
 export type TCaSigningConfigServiceFactory = ReturnType<typeof caSigningConfigServiceFactory>;
@@ -45,22 +63,28 @@ export const caSigningConfigServiceFactory = ({
   certificateAuthorityDAL,
   internalCertificateAuthorityDAL,
   permissionService,
-  appConnectionDAL,
+  licenseService,
+  appConnectionService,
   caAutoRenewalQueue
 }: TCaSigningConfigServiceFactoryDep) => {
-  const validateAppConnectionOrg = async (connectionId: string, actorOrgId: string) => {
-    const appConnection = await appConnectionDAL.findById(connectionId);
-    if (!appConnection || appConnection.orgId !== actorOrgId) {
-      throw new BadRequestError({ message: "App connection not found or does not belong to your organization" });
-    }
-  };
-
   const getSigningConfigByCaId = async (internalCaId: string) => {
     const config = await caSigningConfigDAL.findByCaId(internalCaId);
     if (!config) {
       throw new NotFoundError({ message: "No signing configuration found for this CA" });
     }
     return config;
+  };
+
+  const validateSigningAppConnection = async (
+    type: CaSigningConfigType,
+    connectionId: string | undefined,
+    projectId: string,
+    actor: OrgServiceActor
+  ) => {
+    const app = CA_SIGNING_CONFIG_CONNECTION_MAP[type];
+    if (!app || connectionId === undefined) return;
+
+    await appConnectionService.validateAppConnectionUsageById(app, { connectionId, projectId }, actor);
   };
 
   const createSigningConfig = async ({
@@ -72,12 +96,14 @@ export const caSigningConfigServiceFactory = ({
     actor,
     actorId,
     actorAuthMethod,
-    actorOrgId
+    actorOrgId,
+    permissionActor
   }: TCreateCaSigningConfigDTO & {
     actor: ActorType;
     actorId: string;
     actorAuthMethod: ActorAuthMethod;
     actorOrgId: string;
+    permissionActor: OrgServiceActor;
   }) => {
     const ca = await certificateAuthorityDAL.findByIdWithAssociatedCa(caId);
     if (!ca) throw new NotFoundError({ message: `CA with ID ${caId} not found` });
@@ -118,7 +144,6 @@ export const caSigningConfigServiceFactory = ({
         throw new BadRequestError({ message: "Destination config is required for Venafi signing" });
       }
       VenafiDestinationConfigSchema.parse(destinationConfig);
-      await validateAppConnectionOrg(appConnectionId, actorOrgId);
     }
 
     // Azure AD CS requires appConnectionId and destinationConfig
@@ -130,10 +155,33 @@ export const caSigningConfigServiceFactory = ({
         throw new BadRequestError({ message: "Destination config is required for Azure AD CS signing" });
       }
       AzureAdCsDestinationConfigSchema.parse(destinationConfig);
-      await validateAppConnectionOrg(appConnectionId, actorOrgId);
     }
 
-    const isExternalCa = type === CaSigningConfigType.Venafi || type === CaSigningConfigType.AzureAdCs;
+    if (type === CaSigningConfigType.Adcs) {
+      if (!appConnectionId) {
+        throw new BadRequestError({ message: "App connection ID is required for ADCS signing" });
+      }
+      if (!destinationConfig) {
+        throw new BadRequestError({ message: "Destination config is required for ADCS signing" });
+      }
+      AdcsDestinationConfigSchema.parse(destinationConfig);
+    }
+
+    await validateSigningAppConnection(type, appConnectionId, ca.projectId, permissionActor);
+
+    const isExternalCa = EXTERNAL_SIGNING_TYPES.includes(type);
+
+    // An org already signing through a provider can re-save or switch between them; only introducing
+    // one is refused. updateSigningConfig takes no type, so it cannot reach this.
+    if (isExternalCa && !EXTERNAL_SIGNING_TYPES.includes(existing?.type ?? "")) {
+      const plan = await licenseService.getPlan(actorOrgId);
+      if (!plan.pkiEnterpriseCaIntegrations) {
+        throw new BadRequestError({
+          message:
+            "Failed to sign this certificate authority through a third-party provider due to plan restriction. Upgrade plan to connect an external certificate authority."
+        });
+      }
+    }
 
     const config = await caSigningConfigDAL.transaction(async (tx) => {
       if (existing) {
@@ -205,12 +253,14 @@ export const caSigningConfigServiceFactory = ({
     actor,
     actorId,
     actorAuthMethod,
-    actorOrgId
+    actorOrgId,
+    permissionActor
   }: TUpdateCaSigningConfigDTO & {
     actor: ActorType;
     actorId: string;
     actorAuthMethod: ActorAuthMethod;
     actorOrgId: string;
+    permissionActor: OrgServiceActor;
   }) => {
     const ca = await certificateAuthorityDAL.findByIdWithAssociatedCa(caId);
     if (!ca) throw new NotFoundError({ message: `CA with ID ${caId} not found` });
@@ -239,9 +289,16 @@ export const caSigningConfigServiceFactory = ({
     const updateData: {
       parentCaId?: string | null;
       appConnectionId?: string;
-      destinationConfig?: TVenafiDestinationConfig | TAzureAdCsDestinationConfig;
+      destinationConfig?: TVenafiDestinationConfig | TAzureAdCsDestinationConfig | TAdcsDestinationConfig;
       lastExternalCertificateId?: string;
     } = {};
+
+    await validateSigningAppConnection(
+      existing.type as CaSigningConfigType,
+      appConnectionId,
+      ca.projectId,
+      permissionActor
+    );
 
     if (existing.type === CaSigningConfigType.Internal && parentCaId !== undefined) {
       updateData.parentCaId = parentCaId;
@@ -249,7 +306,6 @@ export const caSigningConfigServiceFactory = ({
 
     if (existing.type === CaSigningConfigType.Venafi) {
       if (appConnectionId !== undefined) {
-        await validateAppConnectionOrg(appConnectionId, actorOrgId);
         updateData.appConnectionId = appConnectionId;
       }
       if (destinationConfig !== undefined) {
@@ -261,11 +317,20 @@ export const caSigningConfigServiceFactory = ({
 
     if (existing.type === CaSigningConfigType.AzureAdCs) {
       if (appConnectionId !== undefined) {
-        await validateAppConnectionOrg(appConnectionId, actorOrgId);
         updateData.appConnectionId = appConnectionId;
       }
       if (destinationConfig !== undefined) {
         AzureAdCsDestinationConfigSchema.parse(destinationConfig);
+        updateData.destinationConfig = destinationConfig;
+      }
+    }
+
+    if (existing.type === CaSigningConfigType.Adcs) {
+      if (appConnectionId !== undefined) {
+        updateData.appConnectionId = appConnectionId;
+      }
+      if (destinationConfig !== undefined) {
+        AdcsDestinationConfigSchema.parse(destinationConfig);
         updateData.destinationConfig = destinationConfig;
       }
     }
@@ -548,6 +613,63 @@ export const caSigningConfigServiceFactory = ({
     return { ca: { id: ca.id, dn: ca.internalCa?.dn ?? "", projectId: ca.projectId } };
   };
 
+  const installCertificateAdcsNative = async ({
+    caId,
+    maxPathLength,
+    actor,
+    actorId,
+    actorAuthMethod,
+    actorOrgId
+  }: {
+    caId: string;
+    maxPathLength?: number;
+    actor: ActorType;
+    actorId: string;
+    actorAuthMethod: ActorAuthMethod;
+    actorOrgId: string;
+  }) => {
+    const ca = await certificateAuthorityDAL.findByIdWithAssociatedCa(caId);
+    if (!ca) throw new NotFoundError({ message: `CA with ID ${caId} not found` });
+
+    const { permission } = await permissionService.getProjectPermission({
+      actor,
+      actorId,
+      projectId: ca.projectId,
+      actorAuthMethod,
+      actorOrgId,
+      actionProjectType: ActionProjectType.CertificateManager
+    });
+
+    ForbiddenError.from(permission).throwUnlessCan(
+      ProjectPermissionCertificateAuthorityActions.IssueCACertificate,
+      subject(ProjectPermissionSub.CertificateAuthorities, { name: ca.name })
+    );
+
+    const internalCa = await internalCertificateAuthorityDAL.findOne({ caId });
+    if (!internalCa) throw new NotFoundError({ message: `Internal CA with caId ${caId} not found` });
+
+    const signingConfig = await getSigningConfigByCaId(internalCa.id);
+
+    if (signingConfig.type !== CaSigningConfigType.Adcs) {
+      throw new BadRequestError({ message: "CA signing config is not configured for ADCS" });
+    }
+
+    if (!signingConfig.appConnectionId) {
+      throw new BadRequestError({ message: "ADCS signing config is missing app connection" });
+    }
+
+    const parseResult = AdcsDestinationConfigSchema.safeParse(signingConfig.destinationConfig);
+    if (!parseResult.success) {
+      throw new BadRequestError({
+        message: "ADCS signing config has invalid or missing destination configuration"
+      });
+    }
+
+    await caAutoRenewalQueue.queueNativeAdcsInstall(caId, maxPathLength);
+
+    return { ca: { id: ca.id, dn: ca.internalCa?.dn ?? "", projectId: ca.projectId } };
+  };
+
   return {
     createSigningConfig,
     getSigningConfig,
@@ -555,6 +677,7 @@ export const caSigningConfigServiceFactory = ({
     getAutoRenewalConfig,
     updateAutoRenewalConfig,
     installCertificateVenafi,
-    installCertificateAzureAdCs
+    installCertificateAzureAdCs,
+    installCertificateAdcsNative
   };
 };

@@ -9,15 +9,6 @@ export enum SecretType {
   Personal = "personal"
 }
 
-export type SecretReminderRecipient = {
-  user: {
-    id: string;
-    username: string;
-    email: string;
-  };
-  id: string;
-};
-
 // both personal and shared secret stitched together for dashboard
 export type SecretV3RawSanitized = {
   id: string;
@@ -43,7 +34,6 @@ export type SecretV3RawSanitized = {
   isReminderEvent?: boolean;
   isRotatedSecret?: boolean;
   isHoneyTokenSecret?: boolean;
-  secretReminderRecipients?: SecretReminderRecipient[];
   rotationId?: string;
   isPending?: boolean;
   hasPendingValueChange?: boolean;
@@ -51,6 +41,7 @@ export type SecretV3RawSanitized = {
   reminder?: Reminder;
   isEmpty?: boolean;
   isOverrideEmpty?: boolean;
+  revokedProjectFolderGrant?: boolean;
 };
 
 export type SecretV3Raw = {
@@ -76,9 +67,9 @@ export type SecretV3Raw = {
   isRotatedSecret?: boolean;
   isHoneyTokenSecret?: boolean;
   rotationId?: string;
-  secretReminderRecipients?: SecretReminderRecipient[];
   reminder?: Reminder;
   isEmpty?: boolean;
+  revokedProjectFolderGrant?: boolean;
 };
 
 export type SecretV3RawResponse = {
@@ -331,6 +322,7 @@ export type TSecretDependencyTreeNode = {
   key: string;
   environment: string;
   secretPath: string;
+  project?: { id: string; slug: string; name: string };
   children: TSecretDependencyTreeNode[];
 };
 

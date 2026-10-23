@@ -3,21 +3,21 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { apiRequest } from "@app/config/request";
 
+import { ApiErrorTypes } from "../types";
 import { accessApprovalKeys } from "./queries";
 import {
   TAccessApproval,
-  TAccessApprovalRequest,
   TCreateAccessPolicyDTO,
   TCreateAccessRequestDTO,
   TDeleteSecretPolicyDTO,
-  TUpdateAccessPolicyDTO,
-  TUpdateAccessRequestDTO
+  TUpdateAccessPolicyDTO
 } from "./types";
 
 export const useCreateAccessApprovalPolicy = () => {
   const queryClient = useQueryClient();
 
   return useMutation<object, object, TCreateAccessPolicyDTO>({
+    meta: { handledErrorCodes: [ApiErrorTypes.BadRequestError] },
     mutationFn: async ({
       environments,
       projectSlug,
@@ -66,6 +66,7 @@ export const useUpdateAccessApprovalPolicy = () => {
   const queryClient = useQueryClient();
 
   return useMutation<object, object, TUpdateAccessPolicyDTO>({
+    meta: { handledErrorCodes: [ApiErrorTypes.BadRequestError] },
     mutationFn: async ({
       id,
       approvers,
@@ -154,25 +155,6 @@ export const useCreateAccessRequest = () => {
       queryClient.invalidateQueries({
         queryKey: accessApprovalKeys.getAccessApprovalRequestCount(projectSlug)
       });
-      queryClient.invalidateQueries({
-        queryKey: accessApprovalKeys.getAccessApprovalRequestsAllForProject(projectSlug)
-      });
-    }
-  });
-};
-
-export const useUpdateAccessRequest = () => {
-  const queryClient = useQueryClient();
-  return useMutation<TAccessApprovalRequest, object, TUpdateAccessRequestDTO>({
-    mutationFn: async ({ requestId, ...payload }) => {
-      const { data } = await apiRequest.patch<{ approval: TAccessApprovalRequest }>(
-        `/api/v1/access-approvals/requests/${requestId}`,
-        payload
-      );
-
-      return data.approval;
-    },
-    onSuccess: (_, { projectSlug }) => {
       queryClient.invalidateQueries({
         queryKey: accessApprovalKeys.getAccessApprovalRequestsAllForProject(projectSlug)
       });

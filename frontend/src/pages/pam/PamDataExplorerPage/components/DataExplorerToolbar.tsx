@@ -15,7 +15,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@app/components/v3/gene
 
 import type { ColumnInfo } from "../data-explorer-types";
 import type { ExportFormat } from "../data-export";
-import type { FilterCondition, SortCondition } from "../sql-generation";
+import type { FilterCondition, SortCondition, SqlDialect } from "../sql-generation";
 import { ExportDropdown } from "./ExportDropdown";
 import { FilterPopover } from "./FilterPopover";
 import { SortPopover } from "./SortPopover";
@@ -39,13 +39,14 @@ type DataExplorerToolbarProps = {
   onOffsetChange: (offset: number) => void;
   onPageSizeChange: (size: number) => void;
   executionTimeMs: number | null;
-  hasPrimaryKey: boolean;
+  canEditRows: boolean;
   isDataLoading?: boolean;
   onRefresh: () => void;
   isRefreshing?: boolean;
   onExport: (format: ExportFormat) => void;
   onCopy: (format: ExportFormat) => void;
   hasData: boolean;
+  dialect: SqlDialect;
 };
 
 export const DataExplorerToolbar = ({
@@ -67,13 +68,14 @@ export const DataExplorerToolbar = ({
   onOffsetChange,
   onPageSizeChange,
   executionTimeMs,
-  hasPrimaryKey,
+  canEditRows,
   isDataLoading = false,
   onRefresh,
   isRefreshing = false,
   onExport,
   onCopy,
-  hasData
+  hasData,
+  dialect
 }: DataExplorerToolbarProps) => {
   const rangeStart = totalCount === 0 ? 0 : offset + 1;
   const rangeEnd = Math.min(offset + pageSize, totalCount);
@@ -86,7 +88,12 @@ export const DataExplorerToolbar = ({
       onMouseDown={(e) => e.stopPropagation()}
     >
       <div className="flex items-center gap-2">
-        <FilterPopover columns={columns} filters={filters} onFiltersChange={onFiltersChange} />
+        <FilterPopover
+          columns={columns}
+          filters={filters}
+          onFiltersChange={onFiltersChange}
+          dialect={dialect}
+        />
         <SortPopover
           columns={columns}
           sorts={sorts}
@@ -94,7 +101,7 @@ export const DataExplorerToolbar = ({
           disabled={isDataLoading}
         />
 
-        {hasPrimaryKey && (
+        {canEditRows && (
           <>
             <div className="h-4 w-px bg-border" />
             <Button variant="outline" size="xs" onClick={onAddRecord} className="gap-1">
@@ -104,7 +111,7 @@ export const DataExplorerToolbar = ({
           </>
         )}
 
-        {selectedRowCount > 0 && hasPrimaryKey && (
+        {selectedRowCount > 0 && canEditRows && (
           <Button variant="danger" size="xs" onClick={onDeleteSelected} className="gap-1">
             <Trash2Icon className="size-3" />
             Delete {selectedRowCount} record{selectedRowCount !== 1 ? "s" : ""}
@@ -264,9 +271,9 @@ const LimitOffsetPopover = ({
                 value={limitInput}
                 onChange={(e) => setLimitInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && applyChanges()}
-                className={`h-8 w-16 rounded border bg-transparent text-center text-sm text-mineshaft-200 outline-none ${
+                className={`h-8 w-16 rounded border bg-transparent text-center text-sm text-foreground outline-none ${
                   limitError
-                    ? "border-red-500 focus:border-red-500"
+                    ? "border-danger focus:border-danger"
                     : "border-border focus:border-ring"
                 }`}
                 min={1}
@@ -279,9 +286,9 @@ const LimitOffsetPopover = ({
                 value={offsetInput}
                 onChange={(e) => setOffsetInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && applyChanges()}
-                className={`h-8 w-16 rounded border bg-transparent text-center text-sm text-mineshaft-200 outline-none ${
+                className={`h-8 w-16 rounded border bg-transparent text-center text-sm text-foreground outline-none ${
                   offsetError
-                    ? "border-red-500 focus:border-red-500"
+                    ? "border-danger focus:border-danger"
                     : "border-border focus:border-ring"
                 }`}
                 min={0}
@@ -289,7 +296,7 @@ const LimitOffsetPopover = ({
             </div>
           </div>
           {(limitError || offsetError) && (
-            <p className="text-center text-[10px] text-red-400">{limitError || offsetError}</p>
+            <p className="text-center text-[10px] text-danger">{limitError || offsetError}</p>
           )}
           <Button
             variant="outline"

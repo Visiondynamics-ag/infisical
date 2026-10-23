@@ -20,6 +20,20 @@ export type TGroupDALFactory = ReturnType<typeof groupDALFactory>;
 export const groupDALFactory = (db: TDbClient) => {
   const groupOrm = ormify(db, TableName.Groups);
 
+  const countGroups = async (filter: TFindFilter<TGroups>, tx?: Knex): Promise<number> => {
+    try {
+      const doc = await (tx || db.replicaNode())(TableName.Groups)
+        // eslint-disable-next-line
+        .where(buildFindFilter(filter))
+        .count({ count: "*" })
+        .first();
+
+      return Number(doc?.count ?? 0);
+    } catch (err) {
+      throw new DatabaseError({ error: err, name: "Count groups" });
+    }
+  };
+
   const findGroups = async (filter: TFindFilter<TGroups>, { offset, limit, sort, tx }: TFindOpt<TGroups> = {}) => {
     try {
       const query = (tx || db.replicaNode())(TableName.Groups)
@@ -156,7 +170,9 @@ export const groupDALFactory = (db: TDbClient) => {
       }
 
       if (search) {
-        void query.andWhereRaw(`CONCAT_WS(' ', "firstName", "lastName", lower("username")) ilike ?`, [`%${search}%`]);
+        void query.andWhereRaw(`CONCAT_WS(' ', "firstName", "lastName", lower("username"), lower("email")) ilike ?`, [
+          `%${search}%`
+        ]);
       } else if (username) {
         void query.andWhereRaw(`lower("${TableName.Users}"."username") ilike ?`, `%${username}%`);
       }
@@ -640,6 +656,7 @@ export const groupDALFactory = (db: TDbClient) => {
   return {
     ...groupOrm,
     findGroups,
+    countGroups,
     findByOrgId,
     listAvailableGroups,
     findAllGroupPossibleUsers,

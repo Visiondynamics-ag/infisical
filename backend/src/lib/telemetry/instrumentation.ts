@@ -18,57 +18,16 @@ import tracer from "dd-trace";
 import dotenv from "dotenv";
 
 import { getTelemetryConfig } from "../config/env";
+import {
+  HIGH_CARDINALITY_METER_NAMES,
+  HTTP_INSTRUMENTATION_METER_ATTRIBUTES,
+  HTTP_INSTRUMENTATION_METER_NAME,
+  INFISICAL_CORE_METER_ATTRIBUTES,
+  METER_AGGREGATION_CARDINALITY_LIMIT,
+  resolveHttpSemconvOptIn
+} from "./telemetry-attributes";
 
 dotenv.config();
-
-// Strict allowlist of attribute keys that may appear on metrics emitted by the "InfisicalCore" meter.
-// Any attribute passed at a call site that's not in this list is silently dropped by the SDK View.
-// Cardinality control is centralized here. Call sites stay simple and a contributor adding an
-// unbounded label by mistake is caught automatically.
-//
-// If you need per-actor breakdowns, query the audit log table. It carries actorId, actorType, ip, userAgent and full event detail.
-const INFISICAL_CORE_METER_ATTRIBUTES = [
-  // HTTP semantics
-  "http.request.method",
-  "http.route",
-  "http.response.status_code",
-  // Tenant scope — bounded by org count
-  "infisical.organization.id",
-  "infisical.environment",
-  // Bounded enums
-  "infisical.auth.method",
-  "infisical.auth.result",
-  "queue.name",
-  "queue.state",
-  "job.name",
-  "error.type",
-  "outcome",
-  "attempts.exhausted",
-  "audit_log.event_type",
-  "audit_log.actor_type",
-  "audit_log.backend",
-  "audit_log.drop_reason",
-  "audit_log_stream.provider",
-  "audit_log_stream.id",
-  "scim.operation",
-  "sso.provider",
-  "sso.action",
-  "db.pool.state",
-  "cache.result",
-  "rate_limit.bucket",
-  // License Server v2 dual-read comparison (bounded: feature key set + a small set of diff kinds)
-  "license.feature",
-  "license.dual_read.kind",
-  // Build info gauge labels — single-value per deploy, no cardinality concern
-  "service.version",
-  "git.commit.sha",
-  "node.version"
-];
-
-// Every meter that predates the InfisicalCore allowlist. None have a View, so their per-actor / unbounded
-// labels (user.email, client.address, syncId, ...) flow through unchanged unless dropped wholesale via
-// OTEL_DROP_HIGH_CARDINALITY_METERS. Kept on by default for self-hosted; dropped in multi-tenant/cloud.
-const HIGH_CARDINALITY_METER_NAMES = ["Infisical", "API", "SecretSyncs", "PkiSyncs", "Integrations"];
 
 const initTelemetryInstrumentation = ({
   exportType,
@@ -127,13 +86,29 @@ const initTelemetryInstrumentation = ({
   const views: ViewOptions[] = [
     {
       meterName: "InfisicalCore",
+      aggregationCardinalityLimit: METER_AGGREGATION_CARDINALITY_LIMIT,
       attributesProcessors: [createAllowListAttributesProcessor(INFISICAL_CORE_METER_ATTRIBUTES)]
+    },
+    {
+      meterName: HTTP_INSTRUMENTATION_METER_NAME,
+      aggregationCardinalityLimit: METER_AGGREGATION_CARDINALITY_LIMIT,
+      attributesProcessors: [createAllowListAttributesProcessor(HTTP_INSTRUMENTATION_METER_ATTRIBUTES)]
     }
   ];
 
   if (dropHighCardinalityMeters) {
     HIGH_CARDINALITY_METER_NAMES.forEach((meterName) => {
-      views.push({ meterName, aggregation: { type: AggregationType.DROP } });
+      // The empty allowlist is load-bearing, not redundant with DROP. The SDK applies the attributes
+      // processor before hashing the attribute set, but consults the aggregator after: a DROP view still
+      // inserts a map entry keyed by the full attribute set, and under cumulative temporality (which the
+      // Prometheus exporter mandates) that entry is retained for the lifetime of the process with no
+      // cardinality cap. Collapsing every point onto the empty attribute set bounds that to one entry
+      // per instrument.
+      views.push({
+        meterName,
+        aggregation: { type: AggregationType.DROP },
+        attributesProcessors: [createAllowListAttributesProcessor([])]
+      });
     });
   }
 
@@ -144,6 +119,20 @@ const initTelemetryInstrumentation = ({
   });
 
   opentelemetry.metrics.setGlobalMeterProvider(meterProvider);
+
+  const requestedSemconvOptIn = process.env.OTEL_SEMCONV_STABILITY_OPT_IN;
+  const resolvedSemconvOptIn = resolveHttpSemconvOptIn(requestedSemconvOptIn);
+  if (requestedSemconvOptIn !== resolvedSemconvOptIn) {
+    // The value an operator set is not the value the instrumentation ends up reading, so say so at boot.
+    // The logger is not available here: instrumentation is imported before the app config is loaded.
+    // eslint-disable-next-line no-console
+    console.log(
+      `Telemetry: set OTEL_SEMCONV_STABILITY_OPT_IN to "${resolvedSemconvOptIn}"${
+        requestedSemconvOptIn ? ` (from "${requestedSemconvOptIn}")` : ""
+      }. Infisical requires the stable HTTP semantic conventions. Set "http/dup" to also emit the old metric names while migrating dashboards.`
+    );
+  }
+  process.env.OTEL_SEMCONV_STABILITY_OPT_IN = resolvedSemconvOptIn;
 
   registerInstrumentations({
     instrumentations: [new HttpInstrumentation(), new RuntimeNodeInstrumentation()]

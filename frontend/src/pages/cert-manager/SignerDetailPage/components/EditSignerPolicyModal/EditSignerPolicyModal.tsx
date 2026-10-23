@@ -7,6 +7,7 @@ import {
   DocumentationLinkBadge,
   Sheet,
   SheetContent,
+  SheetFooter,
   SheetHeader,
   SheetTitle,
   Stepper,
@@ -223,10 +224,11 @@ export const EditSignerPolicyModal = ({
 
   const isLast = safeStep === WIZARD_STEPS.length - 1;
   const showLimitsTab = safeStep === 1;
+  const isCreating = !existingPolicy?.hasSteps;
 
   return (
     <Sheet open={isOpen} onOpenChange={handleClose}>
-      <SheetContent className="flex h-full max-h-full flex-col gap-y-0 sm:max-w-[1500px]">
+      <SheetContent size="workspace" className="flex h-full max-h-full flex-col gap-y-0">
         <SheetHeader className="border-b">
           <SheetTitle>
             <div className="flex w-full items-start gap-2">
@@ -234,11 +236,11 @@ export const EditSignerPolicyModal = ({
                 <ShieldIcon className="h-5 w-5" />
               </div>
               <div>
-                <div className="flex items-center gap-x-2 text-mineshaft-300">
-                  Edit approval policy
+                <div className="flex items-center gap-x-2 text-label">
+                  {isCreating ? "Add approval policy" : "Edit approval policy"}
                   <DocumentationLinkBadge href={PkiDocsUrls.codeSigning.approvals.policy} />
                 </div>
-                <p className="text-sm leading-4 text-mineshaft-400">
+                <p className="text-sm leading-4 text-muted">
                   Choose who approves, and how much each approval gives.
                 </p>
               </div>
@@ -305,7 +307,7 @@ export const EditSignerPolicyModal = ({
             </aside>
           </div>
 
-          <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border px-6 py-4">
+          <SheetFooter className="shrink-0 items-center justify-between border-t">
             <span className="text-xs text-muted">
               {/* eslint-disable-next-line no-nested-ternary */}
               {hasEmptyStep
@@ -348,7 +350,7 @@ export const EditSignerPolicyModal = ({
                 </Button>
               )}
             </div>
-          </div>
+          </SheetFooter>
         </div>
       </SheetContent>
     </Sheet>

@@ -59,7 +59,7 @@ export const registerAccessApprovalRequestRouter = async (server: FastifyZodProv
         })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.OAUTH]),
     handler: async (req) => {
       const { request, projectId } = await server.services.accessApprovalRequest.createAccessApprovalRequest({
         actor: req.permission.type,
@@ -124,7 +124,7 @@ export const registerAccessApprovalRequestRouter = async (server: FastifyZodProv
         })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.OAUTH]),
     handler: async (req) => {
       const { count } = await server.services.accessApprovalRequest.getCount({
         projectSlug: req.query.projectSlug,
@@ -151,6 +151,8 @@ export const registerAccessApprovalRequestRouter = async (server: FastifyZodProv
       response: {
         200: z.object({
           requests: AccessApprovalRequestsSchema.extend({
+            // A global policy is hard-deleted, so its requests keep their history without a policy id.
+            policyId: z.string().uuid().nullable(),
             environmentName: z.string(),
             isApproved: z.boolean(),
             privilege: z
@@ -165,7 +167,7 @@ export const registerAccessApprovalRequestRouter = async (server: FastifyZodProv
               })
               .nullable(),
             policy: z.object({
-              id: z.string(),
+              id: z.string().nullable(),
               name: z.string(),
               approvals: z.number(),
               approvers: z
@@ -201,7 +203,7 @@ export const registerAccessApprovalRequestRouter = async (server: FastifyZodProv
         })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.OAUTH]),
     handler: async (req) => {
       const { requests } = await server.services.accessApprovalRequest.listApprovalRequests({
         projectSlug: req.query.projectSlug,
@@ -297,7 +299,7 @@ export const registerAccessApprovalRequestRouter = async (server: FastifyZodProv
         })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.OAUTH]),
     handler: async (req) => {
       const result = await server.services.accessApprovalRequest.revokeAccessRequest({
         requestId: req.params.requestId,

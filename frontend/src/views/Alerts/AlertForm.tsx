@@ -1,0 +1,343 @@
+import { Controller, FormProvider, useForm, useWatch } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+
+import { createNotification } from "@app/components/notifications";
+import {
+  Button,
+  Checkbox,
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldError,
+  FieldLabel,
+  Input,
+  Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  SheetFooter,
+  TextArea,
+  Toggle
+} from "@app/components/v3";
+import { useScopeVariant } from "@app/hooks";
+import {
+  ALERT_EVENT_TYPE_DESCRIPTIONS,
+  ALERT_EVENT_TYPE_LABELS,
+  ALERT_RESOURCE_EVENT_TYPES,
+  AlertEventType,
+  alertFormSchema,
+  AlertResourceType,
+  MAX_ALERT_BEFORE_DAYS,
+  MIN_ALERT_BEFORE_DAYS,
+  parseAlertBeforeDays,
+  TAlert,
+  TAlertChannelPaywall,
+  TAlertForm,
+  toAlertBefore,
+  toChannelForm,
+  toChannelInput,
+  useCreateAlert,
+  useUpdateAlert
+} from "@app/hooks/api/alerts";
+
+import { ChannelsField } from "./ChannelsField";
+
+type Props = {
+  resourceType: AlertResourceType;
+  projectId?: string;
+  resourceId?: string;
+  channelPaywall?: TAlertChannelPaywall;
+  alert?: TAlert;
+  unavailableEventTypes?: AlertEventType[];
+  onComplete: () => void;
+  onCancel: () => void;
+};
+
+const DEFAULT_ALERT_BEFORE_DAYS = 7;
+const DEFAULT_ALERT_NAMES: Record<AlertEventType, string> = {
+  [AlertEventType.IdentityAuthenticationExpiry]: "Credential expiration alert",
+  [AlertEventType.IdentityAuthMethodChanged]: "Auth method change alert",
+  [AlertEventType.PamAccessRequested]: "Access requested alert",
+  [AlertEventType.PamAccessRequestApproved]: "Request approved alert",
+  [AlertEventType.PamAccessRequestDenied]: "Request denied alert",
+  [AlertEventType.PamAccessRequestBypassed]: "Break-glass alert",
+  [AlertEventType.AuditLogStreamDeliveryFailed]: "Stream delivery failure alert"
+};
+const AGENT_VAULT_ALERT_NAME_PLACEHOLDERS: Partial<Record<AlertEventType, string>> = {
+  [AlertEventType.IdentityAuthenticationExpiry]: "Credential expiration alert",
+  [AlertEventType.IdentityAuthMethodChanged]: "Auth method change alert",
+  [AlertEventType.AuditLogStreamDeliveryFailed]: "Stream delivery failure alert"
+};
+
+const buildFormDefaults = (
+  alert: TAlert | undefined,
+  resourceType: AlertResourceType,
+  defaultEventType: AlertEventType,
+  defaultName: string
+): TAlertForm => {
+  if (!alert) {
+    return {
+      name: defaultName,
+      description: "",
+      resourceType,
+      eventType: defaultEventType,
+      alertBeforeDays: DEFAULT_ALERT_BEFORE_DAYS,
+      dailyReminder: false,
+      enabled: true,
+      channels: []
+    };
+  }
+
+  return {
+    name: alert.name,
+    description: alert.description ?? "",
+    resourceType,
+    eventType: alert.eventType as AlertEventType,
+    alertBeforeDays:
+      parseAlertBeforeDays(alert.condition?.alertBefore) ?? DEFAULT_ALERT_BEFORE_DAYS,
+    dailyReminder: alert.condition?.dailyReminder ?? false,
+    enabled: alert.enabled,
+    channels: alert.channels.map(toChannelForm)
+  };
+};
+
+export const AlertForm = ({
+  resourceType,
+  projectId,
+  resourceId,
+  channelPaywall,
+  alert,
+  unavailableEventTypes = [],
+  onComplete,
+  onCancel
+}: Props) => {
+  const isEditing = Boolean(alert);
+  const scopeVariant = useScopeVariant();
+  const isAgentVault = scopeVariant === "av";
+  const createAlert = useCreateAlert();
+  const updateAlert = useUpdateAlert();
+  const eventTypes = ALERT_RESOURCE_EVENT_TYPES[resourceType];
+  const defaultEventType =
+    eventTypes.find((eventType) => !unavailableEventTypes.includes(eventType)) ?? eventTypes[0];
+
+  const formMethods = useForm<TAlertForm>({
+    resolver: zodResolver(alertFormSchema),
+    defaultValues: buildFormDefaults(
+      alert,
+      resourceType,
+      defaultEventType,
+      isAgentVault ? "" : DEFAULT_ALERT_NAMES[defaultEventType]
+    )
+  });
+
+  const {
+    control,
+    register,
+    handleSubmit,
+    getValues,
+    setValue,
+    formState: { errors, isSubmitting }
+  } = formMethods;
+
+  const eventTypeValue = useWatch({ control, name: "eventType" });
+  const isExpiryEvent = eventTypeValue === AlertEventType.IdentityAuthenticationExpiry;
+  const alertNamePlaceholders = isAgentVault
+    ? AGENT_VAULT_ALERT_NAME_PLACEHOLDERS
+    : DEFAULT_ALERT_NAMES;
+  const handleEventTypeChange = (previous: AlertEventType, next: AlertEventType) => {
+    setValue("eventType", next, { shouldDirty: true });
+    if (getValues("name") === DEFAULT_ALERT_NAMES[previous]) {
+      setValue("name", DEFAULT_ALERT_NAMES[next]);
+    }
+  };
+
+  const onSubmit = async (data: TAlertForm) => {
+    const condition =
+      data.eventType === AlertEventType.IdentityAuthenticationExpiry
+        ? { alertBefore: toAlertBefore(data.alertBeforeDays), dailyReminder: data.dailyReminder }
+        : null;
+    const channels = data.channels.map(toChannelInput);
+    try {
+      if (isEditing && alert) {
+        await updateAlert.mutateAsync({
+          alertId: alert.id,
+          name: data.name,
+          description: data.description || null,
+          enabled: data.enabled,
+          condition,
+          channels
+        });
+        createNotification({ text: "Successfully updated alert", type: "success" });
+      } else {
+        await createAlert.mutateAsync({
+          name: data.name,
+          description: data.description || undefined,
+          resourceType: data.resourceType,
+          resourceId: resourceId ?? null,
+          eventType: data.eventType,
+          condition,
+          enabled: data.enabled,
+          projectId: projectId ?? null,
+          channels
+        });
+        createNotification({ text: "Successfully created alert", type: "success" });
+      }
+      onComplete();
+    } catch {
+      // MutationCache reports request errors globally; keep the form open for another attempt.
+    }
+  };
+
+  return (
+    <FormProvider {...formMethods}>
+      <form
+        onSubmit={handleSubmit(onSubmit)}
+        noValidate
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto"
+      >
+        <div className="flex flex-col gap-5 p-4">
+          <Field>
+            <FieldLabel htmlFor="alert-name">Name</FieldLabel>
+            <FieldContent>
+              <Input
+                id="alert-name"
+                autoFocus
+                placeholder={alertNamePlaceholders[eventTypeValue]}
+                isError={Boolean(errors.name)}
+                {...register("name")}
+                autoComplete="off"
+              />
+              <FieldError errors={[errors.name]} />
+            </FieldContent>
+          </Field>
+
+          <Field>
+            <FieldLabel htmlFor="alert-description">
+              Description <span className="text-muted">(optional)</span>
+            </FieldLabel>
+            <FieldContent>
+              <TextArea
+                id="alert-description"
+                rows={3}
+                placeholder="What is this alert for?"
+                isError={Boolean(errors.description)}
+                {...register("description")}
+              />
+              <FieldError errors={[errors.description]} />
+            </FieldContent>
+          </Field>
+
+          <Controller
+            control={control}
+            name="eventType"
+            render={({ field: { value } }) => (
+              <Field>
+                <FieldLabel>Event</FieldLabel>
+                <FieldContent>
+                  <Select
+                    value={value}
+                    disabled={isEditing}
+                    onValueChange={(next) => handleEventTypeChange(value, next as AlertEventType)}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent position="popper">
+                      {eventTypes.map((eventType) => (
+                        <SelectItem
+                          key={eventType}
+                          value={eventType}
+                          disabled={!isEditing && unavailableEventTypes.includes(eventType)}
+                        >
+                          {ALERT_EVENT_TYPE_LABELS[eventType]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FieldDescription>{ALERT_EVENT_TYPE_DESCRIPTIONS[value]}</FieldDescription>
+                </FieldContent>
+              </Field>
+            )}
+          />
+
+          <Controller
+            control={control}
+            name="enabled"
+            render={({ field }) => (
+              <Label
+                htmlFor="alert-enabled"
+                className="cursor-pointer justify-between rounded-md border border-border px-3 py-2.5 font-normal"
+              >
+                Enabled
+                <Toggle
+                  id="alert-enabled"
+                  variant={scopeVariant}
+                  checked={field.value}
+                  onCheckedChange={field.onChange}
+                />
+              </Label>
+            )}
+          />
+
+          {isExpiryEvent && (
+            <div className="mb-1 flex flex-col gap-1.5">
+              <Label htmlFor="alert-alert-before">Condition</Label>
+              <div className="mt-1 flex flex-wrap items-center gap-3 text-sm text-foreground">
+                <span>Alert</span>
+                <Input
+                  id="alert-alert-before"
+                  type="number"
+                  min={MIN_ALERT_BEFORE_DAYS}
+                  max={MAX_ALERT_BEFORE_DAYS}
+                  className="w-16 text-center"
+                  isError={Boolean(errors.alertBeforeDays)}
+                  {...register("alertBeforeDays", { valueAsNumber: true })}
+                />
+                <span>days before a credential expires</span>
+              </div>
+              <FieldError errors={[errors.alertBeforeDays]} />
+              <Controller
+                control={control}
+                name="dailyReminder"
+                render={({ field }) => (
+                  <Label htmlFor="alert-repeat-daily" className="cursor-pointer font-normal">
+                    <Checkbox
+                      id="alert-repeat-daily"
+                      variant={scopeVariant}
+                      isChecked={field.value}
+                      onCheckedChange={(checked) => field.onChange(checked === true)}
+                    />
+                    Repeat daily until the secret is rotated
+                  </Label>
+                )}
+              />
+            </div>
+          )}
+
+          <ChannelsField
+            projectId={projectId}
+            resourceType={resourceType}
+            resourceId={resourceId ?? alert?.resourceId ?? null}
+            channelPaywall={channelPaywall}
+          />
+        </div>
+
+        <SheetFooter className="sticky bottom-0 justify-end border-t bg-popover">
+          <Button type="button" variant="outline" onClick={onCancel} isDisabled={isSubmitting}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            variant={scopeVariant}
+            isPending={isSubmitting}
+            isDisabled={isSubmitting}
+          >
+            {isEditing ? "Update Alert" : "Create Alert"}
+          </Button>
+        </SheetFooter>
+      </form>
+    </FormProvider>
+  );
+};

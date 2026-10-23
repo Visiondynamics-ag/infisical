@@ -21,12 +21,16 @@ export enum SignerIssuanceJobStatus {
 
 export enum CertKeySource {
   Infisical = "infisical",
-  Hsm = "hsm"
+  Hsm = "hsm",
+  AwsKms = "aws-kms"
 }
 
 export enum HsmKeyAlgorithm {
   RSA_2048 = "RSA_2048",
+  RSA_3072 = "RSA_3072",
   RSA_4096 = "RSA_4096",
   ECC_P256 = "ECC_P256",
   ECC_P384 = "ECC_P384"
 }
+
+export const SIGNER_APPROVAL_REQUIRED_ERROR_NAME = "ApprovalRequired";

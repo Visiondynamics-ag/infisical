@@ -33,6 +33,7 @@ import {
   useUpdatePkiSubscriber
 } from "@app/hooks/api";
 import {
+  buildExtendedKeyUsageToggleSchema,
   EXTENDED_KEY_USAGES_OPTIONS,
   KEY_USAGES_OPTIONS
 } from "@app/hooks/api/certificates/constants";
@@ -69,12 +70,7 @@ const schema = z
       [CertKeyUsage.DECIPHER_ONLY]: z.boolean().optional()
     }),
     extendedKeyUsages: z.object({
-      [CertExtendedKeyUsage.CLIENT_AUTH]: z.boolean().optional(),
-      [CertExtendedKeyUsage.CODE_SIGNING]: z.boolean().optional(),
-      [CertExtendedKeyUsage.EMAIL_PROTECTION]: z.boolean().optional(),
-      [CertExtendedKeyUsage.OCSP_SIGNING]: z.boolean().optional(),
-      [CertExtendedKeyUsage.SERVER_AUTH]: z.boolean().optional(),
-      [CertExtendedKeyUsage.TIMESTAMPING]: z.boolean().optional()
+      ...buildExtendedKeyUsageToggleSchema(z.boolean().optional())
     }),
     enableAutoRenewal: z.boolean().optional().default(false),
     renewalBefore: z.coerce.number().min(1).optional(),
@@ -165,7 +161,9 @@ export const PkiSubscriberModal = ({ popUp, handlePopUpToggle }: Props) => {
   const [tabValue, setTabValue] = useState<FormTab>(FormTab.Configuration);
 
   const { data: pkiSubscriber } = useGetPkiSubscriber({
-    subscriberName: (popUp?.pkiSubscriber?.data as { subscriberName: string })?.subscriberName || ""
+    subscriberName:
+      (popUp?.pkiSubscriber?.data as { subscriberName: string })?.subscriberName || "",
+    projectId
   });
 
   const { mutateAsync: createMutateAsync } = useCreatePkiSubscriber();
@@ -407,7 +405,11 @@ export const PkiSubscriberModal = ({ popUp, handlePopUpToggle }: Props) => {
             <TabPanel value={FormTab.Configuration}>
               {pkiSubscriber && (
                 <FormControl label="Subscriber ID">
-                  <Input value={pkiSubscriber.id} isDisabled className="bg-white/[0.07]" />
+                  <Input
+                    value={pkiSubscriber.id}
+                    isDisabled
+                    className="bg-foreground-inverse/[0.07]"
+                  />
                 </FormControl>
               )}
               <Controller
@@ -420,7 +422,12 @@ export const PkiSubscriberModal = ({ popUp, handlePopUpToggle }: Props) => {
                     errorText={error?.message}
                     isRequired
                   >
-                    <Input {...field} placeholder="web-service" />
+                    <Input
+                      {...field}
+                      placeholder="web-service"
+                      autoComplete="off"
+                      name="pki-subscriber-name"
+                    />
                   </FormControl>
                 )}
               />

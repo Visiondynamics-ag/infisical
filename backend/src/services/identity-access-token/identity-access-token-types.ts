@@ -144,3 +144,23 @@ export type TSignIdentityAccessTokenOutput = {
   jti: string;
   expiresIn: number;
 };
+
+// Columns of a revocation row the runtime check reads to render a verdict.
+export type TRevocationMarker = {
+  id: string;
+  identityId: string;
+  revokedAt?: Date | null;
+  createdAt: Date;
+  scope?: string | null;
+};
+
+// Reason a token is denied. Cached so a hit can build the error without hitting PG.
+export type TRevocationDenyReason =
+  | "token"
+  | "identity"
+  | "client-secret"
+  | "auth-method"
+  | "org-membership"
+  | "org-membership-inactive";
+
+export const MAX_IDENTITY_ACCESS_TOKEN_TTL_SECONDS = 315_360_000; // 10 years

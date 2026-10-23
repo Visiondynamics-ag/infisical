@@ -148,7 +148,7 @@ export const registerAccessApprovalPolicyRouter = async (server: FastifyZodProvi
     },
     onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
     handler: async (req) => {
-      const approval = await server.services.accessApprovalPolicy.createAccessApprovalPolicy({
+      const approval = await server.services.secretAccessApprovalGlobalPolicyBridge.createAccessApprovalPolicy({
         actor: req.permission.type,
         actorId: req.permission.id,
         actorAuthMethod: req.permission.authMethod,
@@ -216,7 +216,7 @@ export const registerAccessApprovalPolicyRouter = async (server: FastifyZodProvi
         })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.OAUTH]),
     handler: async (req) => {
       const approvals = await server.services.accessApprovalPolicy.getAccessApprovalPolicyByProjectSlug({
         actor: req.permission.type,
@@ -245,7 +245,7 @@ export const registerAccessApprovalPolicyRouter = async (server: FastifyZodProvi
       }
     },
 
-    onRequest: verifyAuth([AuthMode.JWT]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.OAUTH]),
     handler: async (req) => {
       const { count } = await server.services.accessApprovalPolicy.getAccessPolicyCountByEnvSlug({
         actor: req.permission.type,
@@ -329,7 +329,7 @@ export const registerAccessApprovalPolicyRouter = async (server: FastifyZodProvi
     },
     onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
     handler: async (req) => {
-      await server.services.accessApprovalPolicy.updateAccessApprovalPolicy({
+      const approval = await server.services.accessApprovalPolicy.updateAccessApprovalPolicy({
         policyId: req.params.policyId,
         actor: req.permission.type,
         actorOrgId: req.permission.orgId,
@@ -346,6 +346,8 @@ export const registerAccessApprovalPolicyRouter = async (server: FastifyZodProvi
           properties: { policyId: req.params.policyId }
         })
         .catch(() => {});
+
+      return { approval };
     }
   });
 
@@ -410,7 +412,8 @@ export const registerAccessApprovalPolicyRouter = async (server: FastifyZodProvi
                 type: z.nativeEnum(ApproverType),
                 id: z.string().nullable().optional(),
                 name: z.string().nullable().optional(),
-                approvalsRequired: z.number().nullable().optional()
+                approvalsRequired: z.number().nullable().optional(),
+                sequence: z.number().nullable().optional()
               })
               .array()
               .nullable()
@@ -430,7 +433,7 @@ export const registerAccessApprovalPolicyRouter = async (server: FastifyZodProvi
         })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
       const approval = await server.services.accessApprovalPolicy.getAccessApprovalPolicyById({
         actor: req.permission.type,

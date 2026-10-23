@@ -67,7 +67,6 @@ type FeatureSet struct {
 	PitRecovery                  bool       `json:"pitRecovery"`
 	IPAllowlisting               bool       `json:"ipAllowlisting"`
 	RBAC                         bool       `json:"rbac"`
-	CustomRateLimits             bool       `json:"customRateLimits"`
 	CustomAlerts                 bool       `json:"customAlerts"`
 	AuditLogs                    bool       `json:"auditLogs"`
 	AuditLogsRetentionDays       IntOrBool  `json:"auditLogsRetentionDays"`
@@ -96,7 +95,6 @@ type FeatureSet struct {
 	ProjectTemplates             bool       `json:"projectTemplates"`
 	KMIP                         bool       `json:"kmip"`
 	Gateway                      bool       `json:"gateway"`
-	SSHHostGroups                bool       `json:"sshHostGroups"`
 	SecretScanning               bool       `json:"secretScanning"`
 	EnterpriseSecretSyncs        bool       `json:"enterpriseSecretSyncs"`
 	EnterpriseCertificateSyncs   bool       `json:"enterpriseCertificateSyncs"`

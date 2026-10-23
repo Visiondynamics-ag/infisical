@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
+import { logger } from "@app/lib/logger";
+
 import { cronJobFactory } from "./cron-job";
 
 vi.mock("@app/lib/logger", () => ({
@@ -27,6 +29,14 @@ const makeRedlock = () => ({
     return fn(controller.signal);
   })
 });
+
+// Slot claims/refreshes are serialized through a promise chain, so a tick's
+// Redis write lands several microtasks after the tick itself. A single
+// `await Promise.resolve()` doesn't drain that; this does.
+// `advanceTimersByTimeAsync` yields to the real event loop, which drains the
+// whole pending microtask queue — deterministic, unlike counting `await
+// Promise.resolve()` hops.
+const flushSlotOps = () => vi.advanceTimersByTimeAsync(0);
 
 // Use a cast via unknown to satisfy the type system for the mocks
 type FakeDeps = {
@@ -112,6 +122,23 @@ describe("register", () => {
         leaseDurationMs: 30 * 60_000
       })
     ).not.toThrow();
+  });
+
+  // The retry model assumes minute granularity: a 6-field pattern firing every 30s would get a
+  // 7.5s window whose first retry lands at 38.5s, past its own next fire, and be marked
+  // failed-final instead of retried. Reject it at registration rather than degrade quietly.
+  test("rejects a sub-minute (6-field) pattern", () => {
+    const { register } = makeFactory();
+    expect(() => register({ name: "x", pattern: "*/30 * * * * *", handler: vi.fn(), runHashTtlS: 3600 })).toThrow(
+      "must have 5 fields"
+    );
+  });
+
+  test("accepts the 5-field patterns the codebase registers", () => {
+    const { register } = makeFactory();
+    ["*/5 * * * *", "0 0 * * *", "0 0 19 2,5,8,11 *", "23 3 * * *"].forEach((pattern, i) => {
+      expect(() => register({ name: `x${i}`, pattern, handler: vi.fn(), runHashTtlS: 3 * 24 * 60 * 60 })).not.toThrow();
+    });
   });
 
   test("throws when factory handlerTimeoutMs default exceeds factory leaseDurationMs", () => {
@@ -223,7 +250,7 @@ describe("slot election", () => {
     const { start, stop } = makeFactory({ redis });
     start();
     // Let the immediate claimOrRefreshSlot call in start() complete
-    await Promise.resolve();
+    await flushSlotOps();
     expect(redis.set).toHaveBeenCalledWith("{cron}:slot:0", expect.any(String), "PX", expect.any(Number), "NX");
     await stop();
   });
@@ -233,7 +260,7 @@ describe("slot election", () => {
     redis.set.mockResolvedValueOnce(null).mockResolvedValueOnce("OK");
     const { start, stop } = makeFactory({ redis });
     start();
-    await Promise.resolve();
+    await flushSlotOps();
     expect(redis.set).toHaveBeenNthCalledWith(1, "{cron}:slot:0", expect.any(String), "PX", expect.any(Number), "NX");
     expect(redis.set).toHaveBeenNthCalledWith(2, "{cron}:slot:1", expect.any(String), "PX", expect.any(Number), "NX");
     await stop();
@@ -245,7 +272,7 @@ describe("slot election", () => {
     const { register, start, stop } = makeFactory({ redis });
     register({ name: "x", pattern: "0 0 * * *", handler: vi.fn(), runHashTtlS: 3600 });
     start();
-    await Promise.resolve();
+    await flushSlotOps();
     expect(redis.eval).not.toHaveBeenCalled();
     await stop();
   });
@@ -255,9 +282,9 @@ describe("slot election", () => {
     redis.set.mockResolvedValueOnce("OK").mockResolvedValue("OK");
     const { start, stop } = makeFactory({ redis });
     start();
-    await Promise.resolve();
+    await flushSlotOps();
     vi.advanceTimersByTime(60);
-    await Promise.resolve();
+    await flushSlotOps();
     const xxCalls = redis.set.mock.calls.filter((c) => (c as string[]).includes("XX"));
     expect(xxCalls.length).toBeGreaterThan(0);
     await stop();
@@ -268,10 +295,66 @@ describe("slot election", () => {
     redis.set.mockResolvedValueOnce("OK").mockResolvedValueOnce(null).mockResolvedValueOnce("OK");
     const { start, stop } = makeFactory({ redis });
     start();
+    await flushSlotOps();
     vi.advanceTimersByTime(60);
-    await Promise.resolve();
+    await flushSlotOps();
+    // Claim (NX) → refresh loses the slot (XX returns null) → re-claim (NX).
     const nxCalls = redis.set.mock.calls.filter((c) => (c as string[]).includes("NX"));
     expect(nxCalls.length).toBeGreaterThanOrEqual(2);
+    await stop();
+  });
+
+  // Regression guard for the double-claim race: two refresh ticks that overlap
+  // must not each run the NX loop and leave the pod holding two slots — only
+  // the last-assigned one would ever be released.
+  test("overlapping refresh ticks never claim two different slots", async () => {
+    const redis = makeRedis();
+    // Models real SET NX/XX semantics against an in-memory slot table, with the
+    // held slot expiring right as the refresh observes it (XX misses). Without
+    // serialization, two ticks both observe the loss, both null `currentSlot`,
+    // and the second walks past the slot the first just re-took.
+    const held = new Map<string, string>();
+    redis.set.mockImplementation(async (key: string, value: string, _px: string, _ttl: number, mode: string) => {
+      if (mode === "NX") {
+        if (held.has(key)) return null;
+        held.set(key, value);
+        return "OK";
+      }
+      held.delete(key); // XX: the slot's TTL lapsed before this refresh landed
+      return null;
+    });
+
+    const { start, stop } = makeFactory({ redis });
+    start();
+    await flushSlotOps();
+
+    // Two refresh intervals fire back-to-back with no drain in between.
+    vi.advanceTimersByTime(50);
+    vi.advanceTimersByTime(50);
+    await flushSlotOps();
+
+    expect([...held.keys()]).toEqual(["{cron}:slot:0"]);
+    await stop();
+  });
+
+  // These two strings are what alerting matches on, so pin them. The initial
+  // claim and the periodic refresh share one code path now, and it would be easy
+  // to collapse them into a single message without noticing.
+  test("slot failures are logged under their own labels", async () => {
+    const redis = makeRedis();
+    redis.set.mockRejectedValue(new Error("redis unavailable"));
+    const { start, stop } = makeFactory({ redis });
+    vi.mocked(logger.error).mockClear();
+
+    start(); // initial claim fails
+    await flushSlotOps();
+    vi.advanceTimersByTime(50); // refresh tick fails
+    await flushSlotOps();
+
+    const messages = vi.mocked(logger.error).mock.calls.map(([, message]) => message);
+    expect(messages).toContain("cron: initial slot claim failed");
+    expect(messages).toContain("cron: slot refresh failed");
+
     await stop();
   });
 });
@@ -284,10 +367,11 @@ describe("claim and execute", () => {
     const { register, start, stop } = makeFactory({ redis });
     register({ name: "x", pattern: "0 0 * * *", handler: vi.fn(), runHashTtlS: 3600 });
     start();
-    await Promise.resolve();
+    await flushSlotOps();
     vi.advanceTimersByTime(300);
     await Promise.resolve();
     const firstCount = redis.eval.mock.calls.length;
+    expect(firstCount).toBeGreaterThan(0);
     vi.advanceTimersByTime(30_000);
     await Promise.resolve();
     expect(redis.eval.mock.calls.length).toBe(firstCount);
@@ -341,9 +425,9 @@ describe("redis cluster compatibility", () => {
     // Drive at least one enqueue tick (enqueueIntervalMs=100 in makeFactory).
     await vi.advanceTimersByTimeAsync(150);
 
-    // ENQUEUE_RUN_LUA is the only multi-key script (KEYS[1]=run, KEYS[2]=pending).
-    // Identify its eval call by numKeys === 2 (RELEASE_SLOT_IF_MINE_LUA uses 1).
-    const multiKeyEvalCalls = redis.eval.mock.calls.filter((c) => c[1] === 2);
+    // ENQUEUE_RUN_LUA is the only multi-key script (KEYS[1]=run, KEYS[2]=pending, KEYS[3]=last).
+    // Identify its eval call by numKeys === 3 (RELEASE_SLOT_IF_MINE_LUA uses 1).
+    const multiKeyEvalCalls = redis.eval.mock.calls.filter((c) => c[1] === 3);
     expect(multiKeyEvalCalls.length).toBeGreaterThan(0);
 
     for (const call of multiKeyEvalCalls) {
@@ -660,5 +744,259 @@ describe("stop", () => {
     // Slot is released even though the handler is still hung — recovery is
     // delegated to the lease TTL on a replacement pod.
     expect(redis.eval.mock.calls.some(isSlotReleaseEval)).toBe(true);
+  });
+});
+// Cron patterns cluster: the every-5, every-10 and every-15 minute families all
+// coincide on the hour and the half hour, so a single pod can claim a dozen
+// handlers in one tick and block the event loop the HTTP API shares. Jitter
+// spreads the pickups; the concurrency cap below bounds them outright.
+describe("derived jitter", () => {
+  const SCHEDULED_AT = Date.parse("2024-01-01T00:00:00Z");
+  // Mid-interval, so prevFire is SCHEDULED_AT for every pattern used below.
+  const NOW = new Date("2024-01-01T00:00:30Z");
+  const MAX_JITTER_MS = 5 * 60_000; // factory default
+  const FRACTION = 0.25;
+  const BACKOFF_MS = 30_000; // retryBackoffBaseMs default
+  const NEXT_FIRE_BUFFER_MS = 1_000;
+
+  // What the manager should derive for a given interval. Kept as an independent
+  // expression of the rule rather than a copy of the implementation's `Math.min`.
+  const expectedWindowMs = (intervalMs: number, maxJitterMs = MAX_JITTER_MS) =>
+    Math.min(intervalMs * FRACTION, maxJitterMs, intervalMs - NEXT_FIRE_BUFFER_MS);
+
+  // ENQUEUE_RUN_LUA is the only three-key script:
+  //   eval(script, 3, runKey, pendingZset, lastKey, name, scheduledAt, ttl, id, enqueuedAtMs, eligibleAt, justBecameDue)
+  const enqueuedRuns = (redis: ReturnType<typeof makeRedis>) =>
+    redis.eval.mock.calls
+      .filter((c) => c[1] === 3)
+      .map((c) => ({
+        name: String(c[5]),
+        scheduledAt: Number(c[6]),
+        id: String(c[8]),
+        eligibleAt: Number(c[10])
+      }));
+
+  // Boots a manager, drives one enqueue tick, and returns what it wrote.
+  const enqueueOnce = async (
+    entries: Array<{ name: string; pattern: string; runHashTtlS?: number }>,
+    maxJitterMs?: number
+  ) => {
+    vi.setSystemTime(NOW);
+    const redis = makeRedis();
+    redis.set.mockResolvedValue("OK"); // slot claim succeeds
+    redis.eval.mockResolvedValue(1); // enqueue wins the race
+    const f = cronJobFactory({
+      redis: redis as never,
+      redlock: makeRedlock() as never,
+      slotRefreshMs: 50,
+      enqueueIntervalMs: 100,
+      processIntervalMs: 100,
+      slotTtlMs: 200,
+      leaseDurationMs: 1000,
+      handlerTimeoutMs: 1000,
+      ...(maxJitterMs === undefined ? {} : { maxJitterMs })
+    });
+    entries.forEach(({ name, pattern, runHashTtlS }) =>
+      f.register({ name, pattern, handler: vi.fn(), runHashTtlS: runHashTtlS ?? 3 * 24 * 60 * 60 })
+    );
+    f.start();
+    await vi.advanceTimersByTimeAsync(150);
+    await f.stop();
+    return enqueuedRuns(redis);
+  };
+
+  // The whole point of deriving rather than configuring: nothing is passed at the
+  // registration, and the window still tracks how often the job runs.
+  test("window is a fraction of the job's own interval, capped", async () => {
+    const cases: Array<[string, number]> = [
+      ["*/5 * * * *", 5 * 60_000],
+      ["*/10 * * * *", 10 * 60_000],
+      ["*/15 * * * *", 15 * 60_000],
+      ["0 * * * *", 60 * 60_000],
+      ["0 0 * * *", 24 * 60 * 60_000]
+    ];
+    // One registration per manager so each name's offset is read against its own pattern.
+    for (const [pattern, intervalMs] of cases) {
+      // eslint-disable-next-line no-await-in-loop
+      const [run] = await enqueueOnce([{ name: "x", pattern }]);
+      const offset = run.eligibleAt - run.scheduledAt;
+      expect(offset).toBeGreaterThanOrEqual(0);
+      expect(offset).toBeLessThan(expectedWindowMs(intervalMs));
+    }
+  });
+
+  // An hourly job and a daily job both sit on the cap, so past ~1h the window stops growing.
+  test("cap bounds the window for long intervals", async () => {
+    const [hourly] = await enqueueOnce([{ name: "x", pattern: "0 * * * *" }]);
+    const [daily] = await enqueueOnce([{ name: "x", pattern: "0 0 * * *" }]);
+    expect(hourly.eligibleAt - hourly.scheduledAt).toBeLessThan(MAX_JITTER_MS);
+    expect(daily.eligibleAt - daily.scheduledAt).toBeLessThan(MAX_JITTER_MS);
+  });
+
+  // The offset has to come from a stable hash of the job name, never Math.random():
+  // every pod computes a run's eligibility time independently, so a per-pod offset
+  // would make pods disagree and break the run-id dedup and the lease logic.
+  test("two instances derive the same offset for the same job name", async () => {
+    const [first] = await enqueueOnce([{ name: "telemetry-aggregated-events", pattern: "*/10 * * * *" }]);
+    const [second] = await enqueueOnce([{ name: "telemetry-aggregated-events", pattern: "*/10 * * * *" }]);
+
+    expect(first.eligibleAt).toBe(second.eligibleAt);
+    expect(first.eligibleAt).toBeGreaterThan(SCHEDULED_AT);
+  });
+
+  // A shared-but-constant offset would satisfy determinism while spreading nothing.
+  test("different job names land on different offsets", async () => {
+    const runs = await enqueueOnce([
+      { name: "telemetry-aggregated-events", pattern: "*/10 * * * *" },
+      { name: "daily-resource-cleanup", pattern: "*/10 * * * *" },
+      { name: "certificate-cleanup", pattern: "*/10 * * * *" },
+      { name: "pki-sync-health-check", pattern: "*/10 * * * *" },
+      { name: "health-alert", pattern: "*/10 * * * *" }
+    ]);
+
+    const offsets = runs.map((r) => r.eligibleAt - r.scheduledAt);
+    expect(offsets).toHaveLength(5);
+    expect(new Set(offsets).size).toBe(5);
+  });
+
+  // A run due at or past its own next fire would invert the run order and
+  // invalidate `fitsBeforeNextFire`, which measures a retry against the raw next fire.
+  test("a run is never eligible at or past its own next fire", async () => {
+    const [run] = await enqueueOnce([{ name: "x", pattern: "* * * * *", runHashTtlS: 60 * 60 }]);
+    const nextFire = Date.parse("2024-01-01T00:01:00Z");
+
+    expect(run.scheduledAt).toBe(SCHEDULED_AT);
+    expect(run.eligibleAt).toBeGreaterThanOrEqual(SCHEDULED_AT);
+    expect(run.eligibleAt).toBeLessThanOrEqual(nextFire - NEXT_FIRE_BUFFER_MS);
+  });
+
+  // The reason JITTER_INTERVAL_FRACTION is 0.25 and not something larger: the offset is
+  // spent from the same interval the retry backoff needs, so a wide window on a short
+  // pattern silently converts every failure into failed-final. Cron cannot fire faster
+  // than once a minute, so checking the minute case checks the worst case.
+  test("the first retry still fits before the next fire, at every interval", async () => {
+    const intervals: Array<[string, number]> = [
+      ["* * * * *", 60_000],
+      ["*/5 * * * *", 5 * 60_000],
+      ["*/15 * * * *", 15 * 60_000],
+      ["0 * * * *", 60 * 60_000],
+      ["0 0 * * *", 24 * 60 * 60_000]
+    ];
+    for (const [, intervalMs] of intervals) {
+      const worstOffset = expectedWindowMs(intervalMs);
+      expect(worstOffset + BACKOFF_MS + NEXT_FIRE_BUFFER_MS).toBeLessThan(intervalMs);
+    }
+
+    // And the derived offset really does stay under that bound in practice.
+    const [run] = await enqueueOnce([{ name: "x", pattern: "* * * * *", runHashTtlS: 60 * 60 }]);
+    const offset = run.eligibleAt - run.scheduledAt;
+    expect(offset + BACKOFF_MS + NEXT_FIRE_BUFFER_MS).toBeLessThan(60_000);
+  });
+
+  // Run identity is what the Redis dedup and the Redlock lease key are built
+  // from, so it must stay keyed on the unjittered fire.
+  test("run id and scheduled_at stay keyed on the unjittered fire", async () => {
+    const [run] = await enqueueOnce([{ name: "x", pattern: "*/10 * * * *" }]);
+
+    expect(run.id).toBe(`x:${SCHEDULED_AT}`);
+    expect(run.scheduledAt).toBe(SCHEDULED_AT);
+  });
+
+  test("maxJitterMs: 0 makes every run eligible at its exact scheduled fire", async () => {
+    const runs = await enqueueOnce(
+      [
+        { name: "x", pattern: "*/10 * * * *" },
+        { name: "y", pattern: "0 0 * * *" }
+      ],
+      0
+    );
+
+    expect(runs).toHaveLength(2);
+    runs.forEach((run) => expect(run.eligibleAt).toBe(run.scheduledAt));
+  });
+
+  test("factory rejects a negative maxJitterMs", () => {
+    expect(() =>
+      cronJobFactory({ redis: makeRedis() as never, redlock: makeRedlock() as never, maxJitterMs: -1 })
+    ).toThrow("maxJitterMs");
+  });
+
+  // A run hash that expires before its jittered pickup is reaped as an orphan, so the job
+  // would never run. The comparison is against the cap rather than the job's own window,
+  // which is what keeps it independent of the pattern.
+  test("register rejects a runHashTtlS that the cap could outlive", () => {
+    const { register } = makeFactory();
+    expect(() => register({ name: "x", pattern: "0 0 * * *", handler: vi.fn(), runHashTtlS: 60 })).toThrow(
+      "must exceed the maximum jitter window"
+    );
+  });
+
+  // The cap is deliberately set below every live registration's TTL, so the unconditional
+  // check costs nothing. This is the tightest one in the codebase.
+  test("register accepts the smallest runHashTtlS any live job uses", () => {
+    const { register } = makeFactory();
+    expect(() =>
+      register({ name: "x", pattern: "*/15 * * * *", handler: vi.fn(), runHashTtlS: 15 * 60 })
+    ).not.toThrow();
+  });
+
+  // Each fire derives its window from the gap it sits in, so an uneven pattern gives different
+  // fires different windows. A guard that sampled one gap had a verdict that depended on which
+  // gap the process booted next to: registering at :00:10 rejected a 20s TTL while :01:10
+  // accepted it, and fires in the wider gap then outlived the hash and vanished with no trace.
+  // Comparing against the cap removes the sampling, so the verdict is the same from anywhere.
+  describe("uneven patterns", () => {
+    // Fires at :00,:01,:05,:06,... so gaps alternate 1 minute and 4 minutes.
+    const UNEVEN = "0,1,5,6,10,11,15,16,20,21,25,26,30,31,35,36,40,41,45,46,50,51,55,56 * * * *";
+    const BOOT_TIMES = ["2024-01-01T00:00:10Z", "2024-01-01T00:01:10Z", "2024-01-01T00:02:00Z"];
+
+    test("the guard's verdict does not depend on when the process booted", () => {
+      for (const now of BOOT_TIMES) {
+        vi.setSystemTime(new Date(now));
+        const { register } = makeFactory();
+        expect(() => register({ name: "x", pattern: UNEVEN, handler: vi.fn(), runHashTtlS: 20 })).toThrow(
+          "must exceed the maximum jitter window"
+        );
+      }
+    });
+
+    test("a TTL above the cap is accepted from any gap", () => {
+      for (const now of BOOT_TIMES) {
+        vi.setSystemTime(new Date(now));
+        const { register } = makeFactory();
+        expect(() => register({ name: "x", pattern: UNEVEN, handler: vi.fn(), runHashTtlS: 30 * 60 })).not.toThrow();
+      }
+    });
+
+    // The property the cap buys: no fire of any pattern, uneven included, is held back
+    // longer than a TTL that already clears the cap.
+    test("no fire of an uneven pattern is held back past the cap", async () => {
+      const runs = await enqueueOnce([{ name: "x", pattern: UNEVEN, runHashTtlS: 30 * 60 }]);
+      expect(runs.length).toBeGreaterThan(0);
+      runs.forEach((run) => expect(run.eligibleAt - run.scheduledAt).toBeLessThan(MAX_JITTER_MS));
+    });
+  });
+
+  // A run whose hash expires before it is claimed is gone, and nothing else records it:
+  // it never completed, never failed, and its zset entry is reaped on sight. The log line
+  // is the only trace, so it is the thing an operator can alert on.
+  test("reaping a run whose hash expired before pickup is logged as an error", async () => {
+    vi.setSystemTime(new Date("2024-01-01T00:00:30Z"));
+    const redis = makeRedis();
+    redis.set.mockResolvedValue("OK");
+    redis.zrangebyscore.mockResolvedValue(["x:1704067200000"]);
+    redis.hgetall.mockResolvedValue({}); // hash gone, zset entry lingers
+    vi.mocked(logger.error).mockClear();
+
+    const { register, start, stop } = makeFactory({ redis });
+    register({ name: "x", pattern: "*/10 * * * *", handler: vi.fn(), runHashTtlS: 3600 });
+    start();
+    await vi.advanceTimersByTimeAsync(300);
+
+    const messages = vi.mocked(logger.error).mock.calls.map(([a, b]) => (typeof a === "string" ? a : b));
+    expect(messages.some((m) => typeof m === "string" && m.includes("expired before it was claimed"))).toBe(true);
+    expect(redis.zrem).toHaveBeenCalledWith("{cron}:pending", "x:1704067200000");
+
+    await stop();
   });
 });

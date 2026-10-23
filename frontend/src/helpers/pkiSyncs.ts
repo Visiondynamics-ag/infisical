@@ -1,46 +1,139 @@
 import { AppConnection } from "@app/hooks/api/appConnections";
-import { PkiSync } from "@app/hooks/api/pkiSyncs";
+import {
+  HostCommandVariable,
+  isKeystoreExportFormat,
+  PkiSync,
+  PkiSyncExportFormat,
+  PkiSyncStatus
+} from "@app/hooks/api/pkiSyncs";
 
 export const PKI_SYNC_MAP: Record<
   PkiSync,
   {
     name: string;
     image: string;
+    category: string;
+    description: string;
   }
 > = {
   [PkiSync.AzureKeyVault]: {
     name: "Azure Key Vault",
-    image: "Microsoft Azure.png"
+    image: "Microsoft Azure.png",
+    category: "Azure",
+    description: "Sync certificates to Azure Key Vault."
   },
   [PkiSync.AwsCertificateManager]: {
     name: "AWS Certificate Manager",
-    image: "Amazon Web Services.png"
+    image: "Amazon Web Services.png",
+    category: "AWS",
+    description: "Sync certificates to AWS Certificate Manager (ACM)."
   },
   [PkiSync.AwsSecretsManager]: {
     name: "AWS Secrets Manager",
-    image: "Amazon Web Services.png"
+    image: "Amazon Web Services.png",
+    category: "AWS",
+    description: "Sync certificates to AWS Secrets Manager."
   },
   [PkiSync.AwsElasticLoadBalancer]: {
     name: "AWS Elastic Load Balancer",
-    image: "Amazon Web Services.png"
+    image: "Amazon Web Services.png",
+    category: "AWS",
+    description: "Bind certificates to AWS Elastic Load Balancer listeners."
   },
   [PkiSync.Chef]: {
     name: "Chef",
-    image: "Chef.png"
+    image: "Chef.png",
+    category: "Infrastructure",
+    description: "Sync certificates to a Chef data bag."
+  },
+  [PkiSync.GcpCertificateManager]: {
+    name: "GCP Certificate Manager",
+    image: "Google Cloud Platform.png",
+    category: "GCP",
+    description: "Sync certificates to GCP Certificate Manager."
   },
   [PkiSync.CloudflareCustomCertificate]: {
     name: "Cloudflare Custom SSL",
-    image: "Cloudflare.png"
+    image: "Cloudflare.png",
+    category: "Networking",
+    description: "Upload custom SSL certificates to Cloudflare."
   },
   [PkiSync.NetScaler]: {
     name: "NetScaler",
-    image: "NetScaler.png"
+    image: "NetScaler.png",
+    category: "Networking",
+    description: "Sync certificates to Citrix NetScaler / ADC."
+  },
+  [PkiSync.PaloAltoNetworks]: {
+    name: "Palo Alto Networks",
+    image: "Palo Alto Networks.png",
+    category: "Networking",
+    description: "Push certificates to a Palo Alto Networks firewall or Panorama template."
+  },
+  [PkiSync.PaloAltoNetworksSslTlsProfile]: {
+    name: "Palo Alto Networks SSL/TLS Profile",
+    image: "Palo Alto Networks.png",
+    category: "Networking",
+    description: "Set the certificate of a Palo Alto Networks SSL/TLS service profile."
   },
   [PkiSync.F5BigIp]: {
     name: "F5 BIG-IP",
-    image: "F5 BIG-IP.png"
+    image: "F5 BIG-IP.png",
+    category: "Networking",
+    description: "Sync certificates to F5 BIG-IP."
+  },
+  [PkiSync.KempLoadMaster]: {
+    name: "Kemp LoadMaster",
+    image: "Kemp LoadMaster.png",
+    category: "Networking",
+    description: "Sync certificates to Kemp LoadMaster."
+  },
+  [PkiSync.LinuxServer]: {
+    name: "Linux Server",
+    image: "SSH.png",
+    category: "Infrastructure",
+    description: "Push certificate files to a Linux server over SSH."
+  },
+  [PkiSync.WindowsServer]: {
+    name: "Windows Server",
+    image: "Windows.png",
+    category: "Infrastructure",
+    description: "Push certificate files to a Windows server over WinRM."
+  },
+  [PkiSync.NutanixPrismCentral]: {
+    name: "Nutanix Prism Central",
+    image: "Nutanix.png",
+    category: "Infrastructure",
+    description: "Sync certificates to Nutanix Prism Central."
   }
 };
+
+const CERTIFICATE_DISPLAY_NAME_MAX_LENGTH = 34;
+const CERTIFICATE_DISPLAY_NAME_FALLBACK = "-";
+
+export const getCertificateDisplayName = (cert: {
+  altNames?: string | null;
+  commonName?: string | null;
+}) => {
+  let originalDisplayName = CERTIFICATE_DISPLAY_NAME_FALLBACK;
+  if (cert.altNames && cert.altNames.trim()) {
+    originalDisplayName = cert.altNames.trim();
+  } else if (cert.commonName && cert.commonName.trim()) {
+    originalDisplayName = cert.commonName.trim();
+  }
+
+  const isTruncated = originalDisplayName.length > CERTIFICATE_DISPLAY_NAME_MAX_LENGTH;
+  const displayName = isTruncated
+    ? `${originalDisplayName.substring(0, CERTIFICATE_DISPLAY_NAME_MAX_LENGTH)}...`
+    : originalDisplayName;
+
+  return { originalDisplayName, displayName, isTruncated };
+};
+
+export const truncateCertificateSerialNumber = (serialNumber: string) =>
+  serialNumber.length > 8
+    ? `${serialNumber.slice(0, 4)}...${serialNumber.slice(-4)}`
+    : serialNumber;
 
 export const PKI_SYNC_CONNECTION_MAP: Record<PkiSync, AppConnection> = {
   [PkiSync.AzureKeyVault]: AppConnection.AzureKeyVault,
@@ -48,7 +141,149 @@ export const PKI_SYNC_CONNECTION_MAP: Record<PkiSync, AppConnection> = {
   [PkiSync.AwsSecretsManager]: AppConnection.AWS,
   [PkiSync.AwsElasticLoadBalancer]: AppConnection.AWS,
   [PkiSync.Chef]: AppConnection.Chef,
+  [PkiSync.GcpCertificateManager]: AppConnection.GCP,
   [PkiSync.CloudflareCustomCertificate]: AppConnection.Cloudflare,
   [PkiSync.NetScaler]: AppConnection.NetScaler,
-  [PkiSync.F5BigIp]: AppConnection.F5BigIp
+  [PkiSync.PaloAltoNetworks]: AppConnection.PaloAltoNetworks,
+  [PkiSync.PaloAltoNetworksSslTlsProfile]: AppConnection.PaloAltoNetworks,
+  [PkiSync.F5BigIp]: AppConnection.F5BigIp,
+  [PkiSync.KempLoadMaster]: AppConnection.KempLoadMaster,
+  [PkiSync.LinuxServer]: AppConnection.SSH,
+  [PkiSync.WindowsServer]: AppConnection.WinRM,
+  [PkiSync.NutanixPrismCentral]: AppConnection.NutanixPrismCentral
+};
+
+const PKI_SYNC_ADDITIONAL_CONNECTION_MAP: Partial<Record<PkiSync, AppConnection[]>> = {
+  [PkiSync.LinuxServer]: [AppConnection.LDAP],
+  [PkiSync.WindowsServer]: [AppConnection.LDAP]
+};
+
+export const getPkiSyncConnectionApps = (destination: PkiSync): AppConnection[] => [
+  PKI_SYNC_CONNECTION_MAP[destination],
+  ...(PKI_SYNC_ADDITIONAL_CONNECTION_MAP[destination] ?? [])
+];
+
+export const BOOLEAN_SYNC_OPTION_FIELDS = [
+  { key: "canRemoveCertificates", label: "Remove certificates from destination" },
+  { key: "canImportCertificates", label: "Import Certificates" },
+  { key: "includeRootCa", label: "Include Root CA in Chain" },
+  { key: "preserveArn", label: "Preserve ARN on Renewal" },
+  { key: "enableVersioning", label: "Versioning on Renewal" },
+  { key: "preserveSecretOnRenewal", label: "Preserve Secret on Renewal" },
+  { key: "preserveItemOnRenewal", label: "Preserve Item on Renewal" },
+  { key: "updateExistingCertificates", label: "Update Existing Certificates" },
+  { key: "combineCertificateChain", label: "Combine Certificate and Chain" },
+  { key: "includeTruststore", label: "Include Truststore" },
+  { key: "includePrivateKey", label: "Include Private Key" }
+] as const;
+
+export const KEY_VALUE_SYNC_OPTION_FIELDS = [{ key: "labels", label: "Labels" }] as const;
+
+export const PRESERVE_ARN_DESTINATIONS: PkiSync[] = [
+  PkiSync.AwsCertificateManager,
+  PkiSync.AwsElasticLoadBalancer
+];
+
+export const PRESERVE_ITEM_ON_RENEWAL_DESTINATIONS: PkiSync[] = [
+  PkiSync.Chef,
+  PkiSync.F5BigIp,
+  PkiSync.GcpCertificateManager,
+  PkiSync.KempLoadMaster,
+  PkiSync.NetScaler,
+  PkiSync.PaloAltoNetworks,
+  PkiSync.PaloAltoNetworksSslTlsProfile
+];
+
+export const INCLUDE_ROOT_CA_UNSUPPORTED_DESTINATIONS: PkiSync[] = [
+  PkiSync.CloudflareCustomCertificate,
+  PkiSync.NutanixPrismCentral,
+  PkiSync.PaloAltoNetworks,
+  PkiSync.PaloAltoNetworksSslTlsProfile
+];
+
+export const PALO_ALTO_NETWORKS_PRIVATE_KEY_NOTE =
+  "Palo Alto Networks needs each certificate's private key. Certificates without one, such as those issued from a CSR generated outside Infisical, are skipped.";
+
+export const isPaloAltoNetworksPkiSync = (destination?: PkiSync) =>
+  destination === PkiSync.PaloAltoNetworks || destination === PkiSync.PaloAltoNetworksSslTlsProfile;
+
+export const getPaloAltoNetworksProfileLabel = ({
+  name,
+  vsys
+}: {
+  name: string;
+  vsys?: string | null;
+}) => (vsys ? `${name} (${vsys})` : name);
+
+export const VALUE_SYNC_OPTION_FIELDS = [
+  { key: "certificateNameSchema", label: "Certificate Name Schema" },
+  { key: "caCertificateNameSchema", label: "CA Certificate Name Schema" },
+  { key: "exportFormat", label: "Export Format" },
+  { key: "pemCertificateExtension", label: "Certificate File Extension" },
+  { key: "keystoreAlias", label: "Keystore Alias" },
+  { key: "fileMode", label: "File Permissions" },
+  { key: "privateKeyFileMode", label: "Private Key Permissions" },
+  { key: "owner", label: "Owner" },
+  { key: "group", label: "Group" }
+] as const;
+
+export const getUnusedExportOptionKeys = (exportFormat?: PkiSyncExportFormat): Set<string> => {
+  if (!exportFormat) return new Set();
+  return new Set([
+    ...(exportFormat === PkiSyncExportFormat.Pem
+      ? []
+      : ["combineCertificateChain", "pemCertificateExtension"]),
+    ...(isKeystoreExportFormat(exportFormat) ? ["includePrivateKey"] : ["keystoreAlias"]),
+    ...(exportFormat === PkiSyncExportFormat.Jks ? [] : ["includeTruststore"])
+  ]);
+};
+
+export const POST_SYNC_COMMAND_VARIABLE_DESCRIPTIONS: Record<HostCommandVariable, string> = {
+  [HostCommandVariable.CertificatePath]: "Full path of the certificate file delivered this run",
+  [HostCommandVariable.CertificateDirectory]: "The destination directory",
+  [HostCommandVariable.CertificateFiles]: "Every path written this run, one per line",
+  [HostCommandVariable.CommonName]: "The certificate's common name",
+  [HostCommandVariable.ExportPassword]: "The PKCS#12 or JKS export password",
+  [HostCommandVariable.Pkcs12Password]:
+    "The PKCS#12 or JKS export password (older name for exportPassword)"
+};
+
+export const HEALTH_CHECK_COMMAND_VARIABLE_DESCRIPTIONS: Record<HostCommandVariable, string> = {
+  [HostCommandVariable.CertificatePath]: "Full path of the certificate file this run will write",
+  [HostCommandVariable.CertificateDirectory]: "The directory the sync is about to write to",
+  [HostCommandVariable.CertificateFiles]: "Every path this run will write, one per line",
+  [HostCommandVariable.CommonName]: "The certificate's common name",
+  [HostCommandVariable.ExportPassword]: "The PKCS#12 or JKS export password",
+  [HostCommandVariable.Pkcs12Password]:
+    "The PKCS#12 or JKS export password (older name for exportPassword)"
+};
+
+const SINGLE_CERTIFICATE_HOST_COMMAND_VARIABLES = [
+  HostCommandVariable.CertificatePath,
+  HostCommandVariable.CommonName
+];
+
+export const buildHostCommandTooltipDescriptions = (
+  descriptions: Record<HostCommandVariable, string>
+): Record<string, string> =>
+  Object.fromEntries(
+    Object.values(HostCommandVariable).map((variable) => [
+      variable,
+      SINGLE_CERTIFICATE_HOST_COMMAND_VARIABLES.includes(variable)
+        ? `${descriptions[variable]}. Single-certificate syncs only`
+        : descriptions[variable]
+    ])
+  );
+
+export const getPkiSyncFailureMessage = (
+  status: PkiSyncStatus | null | undefined,
+  message: string | null | undefined
+): string | null => {
+  if (status !== PkiSyncStatus.Failed || !message) return null;
+
+  try {
+    return JSON.stringify(JSON.parse(message), null, 2);
+  } catch {
+    return message;
+  }
 };

@@ -2,12 +2,22 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Search, TriangleAlert, X } from "lucide-react";
 
 import { Tooltip, TooltipContent, TooltipTrigger } from "@app/components/v3";
-import { eventToNameMap, userAgentTypeToNameMap } from "@app/hooks/api/auditLogs/constants";
+import {
+  eventToNameMap,
+  projectToEventsMap,
+  userAgentTypeToNameMap
+} from "@app/hooks/api/auditLogs/constants";
 import { ActorType, EventType, UserAgentType } from "@app/hooks/api/auditLogs/enums";
 import {
   ActorSuggestion,
   useAuditLogActorSuggestions
 } from "@app/hooks/api/auditLogs/useAuditLogActorSuggestions";
+import {
+  AUDIT_LOG_EVENT_CLASSES,
+  auditLogEventClassToNameMap
+} from "@app/hooks/api/auditLogSettings/constants";
+import { AuditLogEventClass } from "@app/hooks/api/auditLogSettings/types";
+import { ProjectType } from "@app/hooks/api/projects/types";
 
 export interface AppliedFilter {
   property: string;
@@ -27,10 +37,18 @@ type FilterProperty = {
 const FILTER_PROPERTIES: FilterProperty[] = [
   {
     key: "event",
-    hints: "get-secret, get-secrets, create-secret, ...",
+    hints: "add-project-member, remove-project-member, ...",
     suggestions: Object.entries(eventToNameMap).map(([value, label]) => ({
       value,
       label: `${value} (${label})`
+    }))
+  },
+  {
+    key: "class",
+    hints: "management, authentication, authorization, data-access",
+    suggestions: AUDIT_LOG_EVENT_CLASSES.map((value) => ({
+      value,
+      label: `${value} (${auditLogEventClassToNameMap[value]})`
     }))
   },
   {
@@ -58,25 +76,65 @@ const FILTER_PROPERTIES: FilterProperty[] = [
 
 const PROJECT_DEPENDENT_KEYS = new Set(["environment", "secret_path", "secret_key"]);
 
+// Filters available to every product. Anything beyond these is product-specific
+const GENERIC_FILTER_KEYS = ["event", "class", "actor", "actor_id", "source"];
+
+// Per-product filter keys. Products not listed fall back to the full set (secrets default)
+const PRODUCT_FILTER_KEYS: Partial<Record<ProjectType, string[]>> = {
+  [ProjectType.PAM]: GENERIC_FILTER_KEYS,
+  [ProjectType.AgentVault]: GENERIC_FILTER_KEYS
+};
+
+// Per-product example hints for the free-text event filter (products not listed use the default)
+const PRODUCT_EVENT_HINTS: Partial<Record<ProjectType, string>> = {
+  [ProjectType.PAM]: "pam-account-access, pam-session-start, ...",
+  [ProjectType.AgentVault]: "agent-vault-session-mint, agent-vault-proxy-enroll, ..."
+};
+
+const getProductFilterProperties = (projectType?: ProjectType) => {
+  const keys = projectType ? PRODUCT_FILTER_KEYS[projectType] : undefined;
+  const properties = keys
+    ? FILTER_PROPERTIES.filter((prop) => keys.includes(prop.key))
+    : FILTER_PROPERTIES;
+
+  // Narrow event suggestions to the current product's events (secrets default shows all)
+  const productEvents = projectType ? projectToEventsMap[projectType] : undefined;
+  const allowedEvents = productEvents ? new Set<string>(productEvents) : undefined;
+  const eventHint = projectType ? PRODUCT_EVENT_HINTS[projectType] : undefined;
+
+  if (!allowedEvents && !eventHint) return properties;
+
+  return properties.map((prop) => {
+    if (prop.key !== "event") return prop;
+    return {
+      ...prop,
+      hints: eventHint ?? prop.hints,
+      suggestions: allowedEvents
+        ? prop.suggestions?.filter((s) => allowedEvents.has(s.value))
+        : prop.suggestions
+    };
+  });
+};
+
 const getDisplayLabel = (key: string) =>
   FILTER_PROPERTIES.find((prop) => prop.key === key)?.displayLabel || key;
-
-const isFreetextKey = (key: string) =>
-  !FILTER_PROPERTIES.find((prop) => prop.key === key)?.suggestions;
 
 type Props = {
   filters: AppliedFilter[];
   onFiltersChange: (filters: AppliedFilter[]) => void;
   hasProjectContext?: boolean;
   projectId?: string;
+  projectType?: ProjectType;
 };
 
 export const AuditSearchFilter = ({
   filters,
   onFiltersChange,
   hasProjectContext,
-  projectId
+  projectId,
+  projectType
 }: Props) => {
+  const availableProperties = useMemo(() => getProductFilterProperties(projectType), [projectType]);
   const currentActorType = filters.find((f) => f.property === "actor")?.value as
     | ActorType
     | undefined;
@@ -92,10 +150,12 @@ export const AuditSearchFilter = ({
   const isTypingValue = colonIndex > 0;
   const propertyKey = isTypingValue ? query.slice(0, colonIndex).trim() : null;
   const propertyDef = propertyKey
-    ? FILTER_PROPERTIES.find((prop) => prop.key === propertyKey)
+    ? availableProperties.find((prop) => prop.key === propertyKey)
     : null;
   const typedValue = isTypingValue ? query.slice(colonIndex + 1) : "";
-  const isFreetext = propertyKey ? isFreetextKey(propertyKey) : false;
+  const isFreetext = propertyKey
+    ? availableProperties.some((prop) => prop.key === propertyKey && !prop.suggestions)
+    : false;
   const isComposing = isTypingValue && (propertyDef || isFreetext);
   const hasProjectFilter =
     hasProjectContext || filters.some((filter) => filter.property === "project");
@@ -119,9 +179,11 @@ export const AuditSearchFilter = ({
   const filteredProperties = useMemo(
     () =>
       query
-        ? FILTER_PROPERTIES.filter((prop) => prop.key.toLowerCase().startsWith(query.toLowerCase()))
-        : FILTER_PROPERTIES,
-    [query]
+        ? availableProperties.filter((prop) =>
+            prop.key.toLowerCase().startsWith(query.toLowerCase())
+          )
+        : availableProperties,
+    [query, availableProperties]
   );
 
   useEffect(() => {
@@ -161,7 +223,7 @@ export const AuditSearchFilter = ({
 
     if (editingIndex !== null) {
       updated = filters.map((filter, index) => (index === editingIndex ? newFilter : filter));
-    } else if (property === "event") {
+    } else if (property === "event" || property === "class") {
       if (filters.some((filter) => filter.property === property && filter.value === value)) {
         resetQuery();
         focusInput();
@@ -564,6 +626,7 @@ export const appliedFiltersToLogFilter = (
   filters: AppliedFilter[]
 ): {
   eventType: EventType[];
+  eventClass: AuditLogEventClass[];
   userAgentType?: UserAgentType;
   actorType?: ActorType;
   actor?: string;
@@ -572,13 +635,18 @@ export const appliedFiltersToLogFilter = (
   secretPath?: string;
   secretKey?: string;
 } => {
-  const result: ReturnType<typeof appliedFiltersToLogFilter> = { eventType: [] };
+  const result: ReturnType<typeof appliedFiltersToLogFilter> = { eventType: [], eventClass: [] };
 
   filters.forEach(({ property, value }) => {
     switch (property) {
       case "event":
         if (Object.values(EventType).includes(value as EventType)) {
           result.eventType.push(value as EventType);
+        }
+        break;
+      case "class":
+        if (Object.values(AuditLogEventClass).includes(value as AuditLogEventClass)) {
+          result.eventClass.push(value as AuditLogEventClass);
         }
         break;
       case "source":

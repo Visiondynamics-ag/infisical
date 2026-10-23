@@ -83,7 +83,12 @@ export const ExternalKmsGcpCredentialSchema = z.object({
   token_uri: z.string().min(1),
   auth_provider_x509_cert_url: z.string().min(1),
   client_x509_cert_url: z.string().min(1),
-  universe_domain: z.string().min(1)
+  // Pinned rather than passed through to the client: the value becomes part of the service hostname, and
+  // the client resolves its own universe from the default anyway, so anything else here only ever produced
+  // a mismatch error from google-gax.
+  universe_domain: z.literal("googleapis.com", {
+    errorMap: () => ({ message: "universe_domain must be 'googleapis.com'" })
+  })
 });
 
 export type TExternalKmsGcpCredentialSchema = z.infer<typeof ExternalKmsGcpCredentialSchema>;
@@ -97,7 +102,7 @@ export type TExternalKmsGcpSchema = z.infer<typeof ExternalKmsGcpSchema>;
 
 export const SanitizedExternalKmsGcpSchema = ExternalKmsGcpSchema.pick({ gcpRegion: true, keyName: true });
 
-const ExternalKmsGcpClientSchema = ExternalKmsGcpSchema.pick({ gcpRegion: true }).extend({
+export const ExternalKmsGcpClientSchema = ExternalKmsGcpSchema.pick({ gcpRegion: true }).extend({
   credential: ExternalKmsGcpCredentialSchema
 });
 export type TExternalKmsGcpClientSchema = z.infer<typeof ExternalKmsGcpClientSchema>;

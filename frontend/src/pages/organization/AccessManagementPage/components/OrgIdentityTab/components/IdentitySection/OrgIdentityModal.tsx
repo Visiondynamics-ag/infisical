@@ -1,31 +1,31 @@
 import { useEffect } from "react";
 import { Controller, useFieldArray, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useNavigate } from "@tanstack/react-router";
 import { PlusIcon, TrashIcon } from "lucide-react";
 import { twMerge } from "tailwind-merge";
 import { z } from "zod";
 
-import { UpgradePlanModal } from "@app/components/license/UpgradePlanModal";
+import { CustomRolesUpgradeIntent, UpgradeGate } from "@app/components/license/UpgradeGate";
 import { createNotification } from "@app/components/notifications";
-import { RoleOption } from "@app/components/roles";
+import { RoleOptionContent } from "@app/components/roles";
 import {
   Button,
+  Combobox,
+  DialogBody,
+  DialogFooter,
   Field,
   FieldContent,
   FieldDescription,
   FieldError,
   FieldLabel,
-  FilterableSelect,
   IconButton,
   Input,
   Label,
-  Switch
+  Toggle
 } from "@app/components/v3";
 import { useOrganization, useSubscription } from "@app/context";
 import { findOrgMembershipRole, isCustomOrgRole } from "@app/helpers/roles";
-import { useCreateOrgIdentity, useGetOrgRoles, useUpdateOrgIdentity } from "@app/hooks/api";
-import { useAddIdentityUniversalAuth } from "@app/hooks/api/identities";
+import { useGetOrgRoles, useUpdateOrgIdentity } from "@app/hooks/api";
 import { usePopUp, UsePopUpState } from "@app/hooks/usePopUp";
 
 const schema = z
@@ -52,7 +52,6 @@ type Props = {
 };
 
 export const OrgIdentityModal = ({ popUp, handlePopUpToggle }: Props) => {
-  const navigate = useNavigate();
   const { currentOrg, isSubOrganization } = useOrganization();
   const orgId = currentOrg?.id || "";
   const { subscription } = useSubscription();
@@ -65,9 +64,7 @@ export const OrgIdentityModal = ({ popUp, handlePopUpToggle }: Props) => {
   const { data: roles } = useGetOrgRoles(orgId);
   const isOrgIdentity = popUp?.identity?.data ? orgId === popUp?.identity?.data?.orgId : true;
 
-  const { mutateAsync: createMutateAsync } = useCreateOrgIdentity();
   const { mutateAsync: updateMutateAsync } = useUpdateOrgIdentity();
-  const { mutateAsync: addMutateAsync } = useAddIdentityUniversalAuth();
 
   const {
     control,
@@ -131,57 +128,19 @@ export const OrgIdentityModal = ({ popUp, handlePopUpToggle }: Props) => {
       orgId: string;
     };
 
-    if (identity) {
-      // update
+    await updateMutateAsync({
+      identityId: identity.identityId,
+      name,
+      role: role.slug || undefined,
+      hasDeleteProtection,
+      organizationId: orgId,
+      metadata
+    });
 
-      await updateMutateAsync({
-        identityId: identity.identityId,
-        name,
-        role: role.slug || undefined,
-        hasDeleteProtection,
-        organizationId: orgId,
-        metadata
-      });
-
-      handlePopUpToggle("identity", false);
-    } else {
-      // create
-
-      const { id: createdId } = await createMutateAsync({
-        name,
-        role: role.slug || undefined,
-        hasDeleteProtection,
-        organizationId: orgId,
-        metadata
-      });
-
-      await addMutateAsync({
-        organizationId: orgId,
-        identityId: createdId,
-        clientSecretTrustedIps: [{ ipAddress: "0.0.0.0/0" }, { ipAddress: "::/0" }],
-        accessTokenTrustedIps: [{ ipAddress: "0.0.0.0/0" }, { ipAddress: "::/0" }],
-        accessTokenTTL: 2592000,
-        accessTokenMaxTTL: 2592000,
-        accessTokenNumUsesLimit: 0,
-        accessTokenPeriod: 0,
-        lockoutEnabled: true,
-        lockoutThreshold: 3,
-        lockoutDurationSeconds: 300,
-        lockoutCounterResetSeconds: 30
-      });
-
-      handlePopUpToggle("identity", false);
-      navigate({
-        to: "/organizations/$orgId/identities/$identityId",
-        params: {
-          identityId: createdId,
-          orgId
-        }
-      });
-    }
+    handlePopUpToggle("identity", false);
 
     createNotification({
-      text: `Successfully ${popUp?.identity?.data ? "updated" : "created"} machine identity`,
+      text: "Successfully updated machine identity",
       type: "success"
     });
 
@@ -189,145 +148,152 @@ export const OrgIdentityModal = ({ popUp, handlePopUpToggle }: Props) => {
   };
 
   return (
-    <form onSubmit={handleSubmit(onFormSubmit)} className="flex flex-col gap-4">
-      {isOrgIdentity && (
+    <form onSubmit={handleSubmit(onFormSubmit)} className="flex min-h-0 flex-col gap-4">
+      <DialogBody className="flex flex-col gap-4">
+        {isOrgIdentity && (
+          <Controller
+            control={control}
+            defaultValue=""
+            name="name"
+            render={({ field, fieldState: { error } }) => (
+              <Field>
+                <FieldLabel>Name</FieldLabel>
+                <FieldContent>
+                  <Input
+                    {...field}
+                    placeholder="Machine 1"
+                    isError={Boolean(error)}
+                    autoComplete="off"
+                    name="machine-identity-name"
+                  />
+                </FieldContent>
+                {error && <FieldError>{error.message}</FieldError>}
+              </Field>
+            )}
+          />
+        )}
         <Controller
           control={control}
-          defaultValue=""
-          name="name"
-          render={({ field, fieldState: { error } }) => (
+          name="role"
+          render={({ field: { onChange, value }, fieldState: { error } }) => (
             <Field>
-              <FieldLabel>Name</FieldLabel>
+              <FieldLabel>{`${popUp?.identity?.data ? "Update " : ""}Role`}</FieldLabel>
               <FieldContent>
-                <Input {...field} autoFocus placeholder="Machine 1" isError={Boolean(error)} />
+                <Combobox
+                  placeholder="Select role..."
+                  searchAriaLabel="Search roles"
+                  options={roles}
+                  isClearable={false}
+                  onValueChange={onChange}
+                  value={roles?.find((role) => role.slug === value?.slug) ?? value}
+                  getOptionValue={(option) => option.slug}
+                  getOptionKeywords={(option) => [option.slug]}
+                  getOptionLabel={(option) => option.name}
+                  renderOption={(option) => <RoleOptionContent role={option} />}
+                  isError={Boolean(error)}
+                />
               </FieldContent>
               {error && <FieldError>{error.message}</FieldError>}
             </Field>
           )}
         />
-      )}
-      <Controller
-        control={control}
-        name="role"
-        render={({ field: { onChange, value }, fieldState: { error } }) => (
-          <Field>
-            <FieldLabel>{`${popUp?.identity?.data ? "Update " : ""}Role`}</FieldLabel>
-            <FieldContent>
-              <FilterableSelect
-                placeholder="Select role..."
-                options={roles}
-                onChange={onChange}
-                value={value}
-                getOptionValue={(option) => option.slug}
-                getOptionLabel={(option) => option.name}
-                components={{ Option: RoleOption }}
-                isError={Boolean(error)}
-              />
-            </FieldContent>
-            {error && <FieldError>{error.message}</FieldError>}
-          </Field>
-        )}
-      />
-      {isOrgIdentity && (
-        <Controller
-          control={control}
-          name="hasDeleteProtection"
-          render={({ field: { onChange, value } }) => (
-            <Field orientation="horizontal">
-              <Switch
-                id="delete-protection-enabled"
-                variant={isSubOrganization ? "sub-org" : "org"}
-                checked={value}
-                onCheckedChange={onChange}
-              />
-              <FieldContent>
-                <Label htmlFor="delete-protection-enabled">Delete Protection</Label>
-                <FieldDescription>
-                  Prevents this identity from being deleted while enabled.
-                </FieldDescription>
-              </FieldContent>
-            </Field>
-          )}
-        />
-      )}
-      {isOrgIdentity && (
-        <div className="flex flex-col gap-2">
-          <Label>Metadata</Label>
-          <div
-            className={`flex max-h-[30vh] thin-scrollbar flex-col gap-3 overflow-y-auto rounded-md border border-border bg-container/50 p-4 ${
-              metadataFormFields.fields.length === 0 ? "border-dashed" : ""
-            }`}
-          >
-            {metadataFormFields.fields.length === 0 ? (
-              <p className="text-center text-sm text-muted">
-                No metadata entries. Click below to add.
-              </p>
-            ) : (
-              metadataFormFields.fields.map(({ id: metadataFieldId }, i) => (
-                <div key={metadataFieldId} className="flex items-start gap-2">
-                  <Field className="flex-1">
-                    {i === 0 && <FieldLabel className="text-xs">Key</FieldLabel>}
-                    <FieldContent>
-                      <Controller
-                        control={control}
-                        name={`metadata.${i}.key`}
-                        render={({ field, fieldState: { error } }) => (
-                          <>
-                            <Input {...field} isError={Boolean(error)} />
-                            {error && <FieldError>{error.message}</FieldError>}
-                          </>
-                        )}
-                      />
-                    </FieldContent>
-                  </Field>
-                  <Field className="flex-1">
-                    {i === 0 && <FieldLabel className="text-xs">Value</FieldLabel>}
-                    <FieldContent>
-                      <Controller
-                        control={control}
-                        name={`metadata.${i}.value`}
-                        render={({ field, fieldState: { error } }) => (
-                          <>
-                            <Input {...field} isError={Boolean(error)} />
-                            {error && <FieldError>{error.message}</FieldError>}
-                          </>
-                        )}
-                      />
-                    </FieldContent>
-                  </Field>
-                  <IconButton
-                    aria-label="Remove metadata entry"
-                    variant="ghost"
-                    size="sm"
-                    type="button"
-                    className={twMerge(i === 0 ? "mt-[27px]" : "mt-[3px]", "hover:text-danger")}
-                    onClick={() => metadataFormFields.remove(i)}
-                  >
-                    <TrashIcon />
-                  </IconButton>
-                </div>
-              ))
+        {isOrgIdentity && (
+          <Controller
+            control={control}
+            name="hasDeleteProtection"
+            render={({ field: { onChange, value } }) => (
+              <Field orientation="horizontal">
+                <Toggle
+                  id="delete-protection-enabled"
+                  variant={isSubOrganization ? "sub-org" : "org"}
+                  checked={value}
+                  onCheckedChange={onChange}
+                />
+                <FieldContent>
+                  <Label htmlFor="delete-protection-enabled">Delete Protection</Label>
+                  <FieldDescription>
+                    Prevents this identity from being deleted while enabled.
+                  </FieldDescription>
+                </FieldContent>
+              </Field>
             )}
-          </div>
-          <div>
-            <Button
-              variant="ghost"
-              size="xs"
-              type="button"
-              onClick={() => metadataFormFields.append({ key: "", value: "" })}
+          />
+        )}
+        {isOrgIdentity && (
+          <div className="flex flex-col gap-2">
+            <Label>Metadata</Label>
+            <div
+              className={`flex max-h-[30vh] thin-scrollbar flex-col gap-3 overflow-y-auto rounded-md border border-border bg-container/50 p-4 ${
+                metadataFormFields.fields.length === 0 ? "border-dashed" : ""
+              }`}
             >
-              <PlusIcon className="mr-1 size-4" />
-              Add Entry
-            </Button>
+              {metadataFormFields.fields.length === 0 ? (
+                <p className="text-center text-sm text-muted">
+                  No metadata entries. Click below to add.
+                </p>
+              ) : (
+                metadataFormFields.fields.map(({ id: metadataFieldId }, i) => (
+                  <div key={metadataFieldId} className="flex items-start gap-2">
+                    <Field className="flex-1">
+                      {i === 0 && <FieldLabel className="text-xs">Key</FieldLabel>}
+                      <FieldContent>
+                        <Controller
+                          control={control}
+                          name={`metadata.${i}.key`}
+                          render={({ field, fieldState: { error } }) => (
+                            <>
+                              <Input {...field} isError={Boolean(error)} />
+                              {error && <FieldError>{error.message}</FieldError>}
+                            </>
+                          )}
+                        />
+                      </FieldContent>
+                    </Field>
+                    <Field className="flex-1">
+                      {i === 0 && <FieldLabel className="text-xs">Value</FieldLabel>}
+                      <FieldContent>
+                        <Controller
+                          control={control}
+                          name={`metadata.${i}.value`}
+                          render={({ field, fieldState: { error } }) => (
+                            <>
+                              <Input {...field} isError={Boolean(error)} />
+                              {error && <FieldError>{error.message}</FieldError>}
+                            </>
+                          )}
+                        />
+                      </FieldContent>
+                    </Field>
+                    <IconButton
+                      aria-label="Remove metadata entry"
+                      variant="ghost"
+                      size="sm"
+                      type="button"
+                      className={twMerge(i === 0 ? "mt-[27px]" : "mt-[3px]", "hover:text-danger")}
+                      onClick={() => metadataFormFields.remove(i)}
+                    >
+                      <TrashIcon />
+                    </IconButton>
+                  </div>
+                ))
+              )}
+            </div>
+            <div>
+              <Button
+                variant="ghost"
+                size="xs"
+                type="button"
+                onClick={() => metadataFormFields.append({ key: "", value: "" })}
+              >
+                <PlusIcon className="mr-1 size-4" />
+                Add Entry
+              </Button>
+            </div>
           </div>
-        </div>
-      )}
-      <div className="flex items-center justify-end gap-2">
-        <Button
-          type="button"
-          variant="outline"
-          onClick={() => handlePopUpToggle("identity", false)}
-        >
+        )}
+      </DialogBody>
+      <DialogFooter>
+        <Button type="button" variant="ghost" onClick={() => handlePopUpToggle("identity", false)}>
           Cancel
         </Button>
         <Button
@@ -336,14 +302,17 @@ export const OrgIdentityModal = ({ popUp, handlePopUpToggle }: Props) => {
           isPending={isSubmitting}
           isDisabled={isSubmitting}
         >
-          {popUp?.identity?.data ? "Update" : "Create"}
+          Update
         </Button>
-      </div>
-      <UpgradePlanModal
+      </DialogFooter>
+      <UpgradeGate
+        paywallKey="organization.org-identity"
         isOpen={upgradePlanPopUp.upgradePlan.isOpen}
         onOpenChange={(isOpen) => handleUpgradePlanPopUpToggle("upgradePlan", isOpen)}
-        text="Assigning custom roles to machine identities can be unlocked if you upgrade to Infisical Enterprise plan."
-        isEnterpriseFeature
+        intent={{
+          ...CustomRolesUpgradeIntent,
+          isEnterpriseFeature: true
+        }}
       />
     </form>
   );

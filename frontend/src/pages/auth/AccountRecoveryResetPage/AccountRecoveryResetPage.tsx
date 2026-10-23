@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { Link, useNavigate, useSearch } from "@tanstack/react-router";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 
+import { AuthPageLayout } from "@app/components/auth/AuthPageLayout";
 import { createNotification } from "@app/components/notifications";
-import { ConfirmActionModal } from "@app/components/v2";
+import { ConfirmationAlertDialog } from "@app/components/v3/platform";
 import { ROUTE_PATHS } from "@app/const/routes";
 import { usePopUp } from "@app/hooks";
 import { useEnableEmailAuthAccountRecovery } from "@app/hooks/api";
@@ -60,12 +61,7 @@ export const AccountRecoveryResetPage = () => {
   };
 
   return (
-    <div className="flex min-h-screen flex-col justify-center bg-gradient-to-tr from-mineshaft-600 via-mineshaft-800 to-bunker-700 px-6 pb-28">
-      <Link to="/">
-        <div className="mt-20 mb-4 flex justify-center">
-          <img src="/images/gradientLogo.svg" className="h-[90px] w-[120px]" alt="Infisical Logo" />
-        </div>
-      </Link>
+    <AuthPageLayout variant="focused" contentClassName="max-w-2xl">
       {step === Steps.ConfirmEmail && (
         <ConfirmEmailStep
           onComplete={(verifyToken, userEncryptionVersion, hasEmailAuth) => {
@@ -95,15 +91,16 @@ export const AccountRecoveryResetPage = () => {
           onBack={() => setStep(Steps.SelectRecoveryMethod)}
         />
       )}
-      <ConfirmActionModal
+      <ConfirmationAlertDialog
         isOpen={popUp.confirmEnableEmailAuth.isOpen}
         confirmKey="enable"
         title="Enable Email Authentication"
-        subTitle={`Do you want to enable email authentication for your account (${email})? This will allow you to log in using your email and password in the future.`}
-        onChange={(isOpen) => handlePopUpToggle("confirmEnableEmailAuth", isOpen)}
-        onConfirmed={handleEnableEmailAuth}
-        buttonText="Enable"
+        description={`Do you want to enable email authentication for your account (${email})? This will allow you to log in using your email and password in the future.`}
+        onOpenChange={(isOpen) => handlePopUpToggle("confirmEnableEmailAuth", isOpen)}
+        onConfirm={handleEnableEmailAuth}
+        confirmLabel="Enable"
+        confirmVariant="neutral"
       />
-    </div>
+    </AuthPageLayout>
   );
 };

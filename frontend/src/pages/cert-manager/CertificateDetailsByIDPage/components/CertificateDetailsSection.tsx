@@ -1,4 +1,3 @@
-import { CopyButton } from "@app/components/v2/CopyButton";
 import {
   Badge,
   Card,
@@ -6,6 +5,7 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  CopyButton,
   Detail,
   DetailGroup,
   DetailLabel,
@@ -18,6 +18,7 @@ import {
   certSignatureAlgorithmToNameMap
 } from "@app/hooks/api/certificates";
 import { camelCaseToSpaces, toTitleCase } from "@app/lib/fn/string";
+import { CustomExtensionList } from "@app/pages/cert-manager/components/CustomExtensionList";
 
 type Props = {
   certificateId: string;
@@ -26,18 +27,18 @@ type Props = {
 // Preserve list for key usage terms that need special formatting
 // These terms have acronyms or specific capitalization that shouldn't be converted from camelCase
 const KEY_USAGE_DISPLAY_MAP: Record<string, string> = {
-  cRLSign: "CRL Sign"
+  cRLSign: "CRL Sign",
+  crl_sign: "CRL Sign"
 };
 
 export const CertificateDetailsSection = ({ certificateId }: Props) => {
   const { data, isLoading } = useGetCertificateById(certificateId);
 
-  // Format key usage names, checking preserve list first
   const formatKeyUsage = (usage: string): string => {
     if (KEY_USAGE_DISPLAY_MAP[usage]) {
       return KEY_USAGE_DISPLAY_MAP[usage];
     }
-    return toTitleCase(camelCaseToSpaces(usage));
+    return toTitleCase(camelCaseToSpaces(usage).replace(/_/g, " "));
   };
 
   if (isLoading) {
@@ -46,7 +47,7 @@ export const CertificateDetailsSection = ({ certificateId }: Props) => {
         {["subject", "extensions", "crypto"].map((id) => (
           <Card key={id}>
             <CardContent className="flex items-center justify-center py-8">
-              <p className="text-sm text-mineshaft-400">Loading...</p>
+              <p className="text-sm text-muted">Loading...</p>
             </CardContent>
           </Card>
         ))}
@@ -122,6 +123,22 @@ export const CertificateDetailsSection = ({ certificateId }: Props) => {
                 </DetailGroup>
               </div>
             )}
+            <Detail>
+              <DetailLabel>Domain Components</DetailLabel>
+              <DetailValue>
+                {certificate.subject?.domainComponents?.length ? (
+                  <div className="flex flex-wrap gap-1">
+                    {certificate.subject.domainComponents.map((dc) => (
+                      <Badge key={dc} variant="neutral">
+                        {dc}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : (
+                  <span className="text-muted">—</span>
+                )}
+              </DetailValue>
+            </Detail>
             <Detail>
               <DetailLabel>Subject Alternative Names</DetailLabel>
               <DetailValue>
@@ -204,6 +221,14 @@ export const CertificateDetailsSection = ({ certificateId }: Props) => {
                 )}
               </DetailValue>
             </Detail>
+            {Boolean(certificate.customExtensions?.length) && (
+              <Detail>
+                <DetailLabel>Custom Extensions</DetailLabel>
+                <DetailValue>
+                  <CustomExtensionList extensions={certificate.customExtensions ?? []} />
+                </DetailValue>
+              </Detail>
+            )}
           </DetailGroup>
         </CardContent>
       </Card>
@@ -249,8 +274,7 @@ export const CertificateDetailsSection = ({ certificateId }: Props) => {
                     {certificate.fingerprints.sha256 && (
                       <CopyButton
                         value={certificate.fingerprints.sha256}
-                        size="xs"
-                        variant="plain"
+                        ariaLabel="Copy SHA-256 fingerprint"
                       />
                     )}
                   </DetailValue>
@@ -260,7 +284,10 @@ export const CertificateDetailsSection = ({ certificateId }: Props) => {
                   <DetailValue className="flex items-center gap-2 font-mono">
                     {certificate.fingerprints.sha1 || <span className="text-muted">—</span>}
                     {certificate.fingerprints.sha1 && (
-                      <CopyButton value={certificate.fingerprints.sha1} size="xs" variant="plain" />
+                      <CopyButton
+                        value={certificate.fingerprints.sha1}
+                        ariaLabel="Copy SHA-1 fingerprint"
+                      />
                     )}
                   </DetailValue>
                 </Detail>

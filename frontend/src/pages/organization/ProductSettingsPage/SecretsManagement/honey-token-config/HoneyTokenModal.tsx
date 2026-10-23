@@ -15,11 +15,11 @@ import {
   AccordionTrigger,
   Button,
   ButtonGroup,
+  Combobox,
   Field,
   FieldError,
   FieldGroup,
   FieldLabel,
-  FilterableSelect,
   IconButton,
   Input,
   Sheet,
@@ -76,8 +76,8 @@ type Props = {
 
 export const HoneyTokenModal = ({ isOpen, onOpenChange }: Props) => {
   const [isTokenVisible, setIsTokenVisible] = useToggle(false);
-  const [, isTokenCopied, setTokenCopied] = useTimedReset({ initialState: false });
-  const [, isCommandCopied, setCommandCopied] = useTimedReset({ initialState: false });
+  const [, isTokenCopied, setTokenCopied] = useTimedReset<boolean>({ initialState: false });
+  const [, isCommandCopied, setCommandCopied] = useTimedReset<boolean>({ initialState: false });
 
   const { data: appConnections = [], isPending: isLoadingConnections } = useListAppConnections();
   const { data: existingConfig } = useGetHoneyTokenConfig(HoneyTokenType.AWS, {
@@ -219,7 +219,7 @@ export const HoneyTokenModal = ({ isOpen, onOpenChange }: Props) => {
             </SheetDescription>
           </SheetHeader>
 
-          <div className="thin-scrollbar flex-1 overflow-y-auto px-4">
+          <div className="thin-scrollbar flex-1 overflow-y-auto p-4">
             <FieldGroup>
               <Controller
                 control={control}
@@ -229,23 +229,19 @@ export const HoneyTokenModal = ({ isOpen, onOpenChange }: Props) => {
 
                   return (
                     <Field>
-                      <FieldLabel>App Connection</FieldLabel>
-                      <FilterableSelect
+                      <FieldLabel htmlFor="honey-token-app-connection">App Connection</FieldLabel>
+                      <Combobox
+                        id="honey-token-app-connection"
                         value={selectedConnection || null}
-                        onChange={(newValue) => {
-                          const singleValue = Array.isArray(newValue) ? newValue[0] : newValue;
-                          if (singleValue && "id" in singleValue) {
-                            field.onChange(singleValue.id);
-                          } else {
-                            field.onChange("");
-                          }
-                        }}
+                        isClearable={false}
+                        onValueChange={(connection) => field.onChange(connection.id)}
                         isError={Boolean(error)}
                         isLoading={isLoadingConnections}
                         options={awsConnections}
                         placeholder="Select an AWS App Connection..."
                         getOptionLabel={(option) => option.name}
                         getOptionValue={(option) => option.id}
+                        getOptionKeywords={(option) => [option.id]}
                       />
                       <FieldError errors={[error]} />
                     </Field>
@@ -334,19 +330,19 @@ export const HoneyTokenModal = ({ isOpen, onOpenChange }: Props) => {
 
             {hasSavedConfig && (
               <div className="mt-4 rounded-md border border-border bg-container p-4">
-                <div className="mb-3 flex items-center gap-2 text-sm text-mineshaft-300">
-                  <Terminal className="size-4 text-mineshaft-400" />
+                <div className="mb-3 flex items-center gap-2 text-sm text-foreground">
+                  <Terminal className="size-4 text-muted" />
                   <span className="font-medium tracking-wide uppercase">
                     Deploy CloudFormation Stack
                   </span>
                 </div>
-                <p className="mb-3 text-sm text-mineshaft-400">
+                <p className="mb-3 text-sm text-muted">
                   Run this command to create the CloudFormation stack that provisions the decoy IAM
                   user and wires CloudTrail alerts back to Infisical.
                 </p>
                 <div className="relative">
-                  <pre className="rounded-md border border-border bg-card p-4 pr-12 font-mono text-xs leading-relaxed break-all whitespace-pre-wrap text-mineshaft-300">
-                    <span className="text-mineshaft-400 select-none">$ </span>
+                  <pre className="rounded-md border border-border bg-card p-4 pr-12 font-mono text-xs leading-relaxed break-all whitespace-pre-wrap text-foreground">
+                    <span className="text-muted select-none">$ </span>
                     {cfCommand}
                   </pre>
                   <IconButton
@@ -366,7 +362,10 @@ export const HoneyTokenModal = ({ isOpen, onOpenChange }: Props) => {
             )}
           </div>
 
-          <SheetFooter className="border-t">
+          <SheetFooter className="justify-end border-t">
+            <Button variant="ghost" onClick={() => onOpenChange(false)} type="button">
+              Cancel
+            </Button>
             <OrgPermissionCan
               I={OrgPermissionHoneyTokenActions.Setup}
               a={OrgPermissionSubjects.HoneyTokens}
@@ -382,9 +381,6 @@ export const HoneyTokenModal = ({ isOpen, onOpenChange }: Props) => {
                 </Button>
               )}
             </OrgPermissionCan>
-            <Button variant="ghost" onClick={() => onOpenChange(false)} type="button">
-              Cancel
-            </Button>
           </SheetFooter>
         </form>
       </SheetContent>

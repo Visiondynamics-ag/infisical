@@ -5,22 +5,18 @@ import {
   Cog,
   FileCheck,
   FileKey,
-  FileText,
   HardDrive,
   IdCardLanyard,
-  Key,
   Layers,
   Lock,
   MapPin,
   Plug,
   ScanSearch,
   Search,
-  Server,
   Shield,
   Tag,
   User,
   Users,
-  Video,
   Webhook
 } from "lucide-react";
 
@@ -134,38 +130,15 @@ export const SECRET_SCANNING_SETTINGS_SUBMENU: Submenu = {
   ]
 };
 
-// --- PAM submenus ---
-
-export const PAM_APPROVALS_SUBMENU: Submenu = {
-  title: "Approvals",
-  pathSuffix: "approvals",
-  defaultTab: "requests",
-  items: [
-    { label: "Requests", icon: FileCheck, tab: "requests" },
-    { label: "Policies", icon: Shield, tab: "policies" },
-    { label: "Grants", icon: Key, tab: "grants" }
-  ]
-};
-
-export const PAM_SETTINGS_SUBMENU: Submenu = {
+// With a single project there is no project to rename or delete, so General is left out.
+const SECRET_SCANNING_SINGLE_PROJECT_SETTINGS_SUBMENU: Submenu = {
   title: "Settings",
   pathSuffix: "settings",
-  defaultTab: "tab-project-general",
-  items: [
-    { label: "General", icon: Cog, tab: "tab-project-general" },
-    { label: "Session Recording", icon: Video, tab: "tab-pam-session-recording" }
-  ]
+  defaultTab: "scanning-settings",
+  items: [{ label: "Scanning Settings", icon: ScanSearch, tab: "scanning-settings" }]
 };
 
-// --- AI submenus ---
-
-export const MCP_SUBMENU: Submenu = {
-  title: "MCP",
-  pathSuffix: "overview",
-  defaultTab: "mcp-endpoints",
-  items: [
-    { label: "MCP Endpoints", icon: Server, tab: "mcp-endpoints" },
-    { label: "MCP Servers", icon: HardDrive, tab: "mcp-servers" },
-    { label: "Activity Logs", icon: FileText, tab: "activity-logs" }
-  ]
-};
+export const getSecretScanningSettingsSubmenu = (hasMultipleProjects: boolean): Submenu =>
+  hasMultipleProjects
+    ? SECRET_SCANNING_SETTINGS_SUBMENU
+    : SECRET_SCANNING_SINGLE_PROJECT_SETTINGS_SUBMENU;

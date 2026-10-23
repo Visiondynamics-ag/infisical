@@ -1,4 +1,5 @@
 import { CertExtendedKeyUsage, CertKeyAlgorithm, CertKeyUsage } from "../certificates/enums";
+import { CertKeySource } from "../signers/types";
 import {
   AcmeDnsProvider,
   CaRenewalType,
@@ -38,6 +39,19 @@ export type TAzureAdCsCertificateAuthority = {
   configuration: {
     azureAdcsConnectionId: string;
     templateName: string;
+  };
+};
+
+export type TAdcsCertificateAuthority = {
+  id: string;
+  projectId: string;
+  type: CaType.ADCS;
+  status: CaStatus;
+  name: string;
+  enableDirectIssuance: boolean;
+  configuration: {
+    appConnectionId: string;
+    caName: string;
   };
 };
 
@@ -143,6 +157,13 @@ export type TInternalCertificateAuthority = {
     locality: string;
     maxPathLength: number;
     keyAlgorithm: CertKeyAlgorithm;
+    keySource?: CertKeySource;
+    hsmConnectorId?: string;
+    hsmConnectorName?: string;
+    appConnectionId?: string;
+    appConnectionName?: string;
+    region?: string;
+    externalKeyId?: string;
     notAfter?: string;
     notBefore?: string;
     dn?: string;
@@ -151,6 +172,7 @@ export type TInternalCertificateAuthority = {
     activeCaCertId?: string;
     crlDistributionPointUrls?: string[];
     disableManagedCrlDistributionPointUrl?: boolean;
+    isOcspEnabled?: boolean;
   };
 };
 
@@ -160,6 +182,7 @@ export const MAX_DISTRIBUTION_POINT_URL_LENGTH = 2048;
 export type TUnifiedCertificateAuthority =
   | TAcmeCertificateAuthority
   | TAzureAdCsCertificateAuthority
+  | TAdcsCertificateAuthority
   | TAwsPcaCertificateAuthority
   | TDigiCertCertificateAuthority
   | TGoDaddyCertificateAuthority
@@ -236,6 +259,11 @@ export type TAzureAdCsTemplate = {
   id: string;
   name: string;
   description?: string;
+};
+
+export type TAdcsTemplate = {
+  id: string;
+  name: string;
 };
 
 export type TImportCaCertificateDTO = {
@@ -358,4 +386,9 @@ export type TRenewCaResponse = {
   certificateChain: string;
   serialNumber: string;
   projectId: string;
+};
+
+export type TCaQuota = {
+  certificateAuthorities: { used: number; limit: number | null };
+  internalCertificateAuthorities: { used: number; limit: number | null };
 };

@@ -1,6 +1,6 @@
 import { ForbiddenError, subject } from "@casl/ability";
 import { requestContext } from "@fastify/request-context";
-import { createLocalJWKSet, errors as joseErrors, JSONWebKeySet, jwtVerify } from "jose";
+import { createLocalJWKSet, errors as joseErrors, jwtVerify } from "jose";
 
 import {
   AccessScope,
@@ -12,20 +12,11 @@ import {
 } from "@app/db/schemas";
 import { TLicenseServiceFactory } from "@app/ee/services/license/license-service";
 import { OrgPermissionIdentityActions, OrgPermissionSubjects } from "@app/ee/services/permission/org-permission";
-import {
-  constructPermissionErrorMessage,
-  validatePrivilegeChangeOperation
-} from "@app/ee/services/permission/permission-fns";
 import { TPermissionServiceFactory } from "@app/ee/services/permission/permission-service-types";
 import { ProjectPermissionIdentityActions, ProjectPermissionSub } from "@app/ee/services/permission/project-permission";
+import { TKeyStoreFactory } from "@app/keystore/keystore";
 import { getConfig } from "@app/lib/config/env";
-import {
-  BadRequestError,
-  ForbiddenRequestError,
-  NotFoundError,
-  PermissionBoundaryError,
-  UnauthorizedError
-} from "@app/lib/errors";
+import { BadRequestError, ForbiddenRequestError, NotFoundError, UnauthorizedError } from "@app/lib/errors";
 import { extractIPDetails, isValidIpOrCidr, TIp } from "@app/lib/ip";
 import { logger } from "@app/lib/logger";
 import { requestMemoKeys } from "@app/lib/request-context/memo-keys";
@@ -38,22 +29,31 @@ import {
   recordAuthAttemptMetric
 } from "@app/lib/telemetry/metrics";
 import { blockLocalAndPrivateIpAddresses } from "@app/lib/validator";
+import { TEventEmitter } from "@app/services/event-outbox/event-outbox-types";
+import {
+  emitIdentityAuthMethodChanged,
+  IdentityAuthMethodChange
+} from "@app/services/identity/identity-auth-method-events";
 
 import { ActorType } from "../auth/auth-type";
+import { assertIdentityAuthAccessAllowed } from "../identity/identity-auth-permission-fns";
 import { TIdentityDALFactory } from "../identity/identity-dal";
 import { TIdentityAccessTokenDALFactory } from "../identity-access-token/identity-access-token-dal";
 import { TIdentityAccessTokenServiceFactory } from "../identity-access-token/identity-access-token-service";
 import { TKmsServiceFactory } from "../kms/kms-service";
 import { KmsDataKey } from "../kms/kms-types";
 import { TMembershipIdentityDALFactory } from "../membership-identity/membership-identity-dal";
+import { recordIdentityLastLoginDebounced } from "../membership-identity/membership-identity-fns";
 import { TOrgDALFactory } from "../org/org-dal";
 import { validateIdentityUpdateForSuperAdminPrivileges } from "../super-admin/super-admin-fns";
 import { TIdentitySpiffeAuthDALFactory } from "./identity-spiffe-auth-dal";
 import {
+  claimKidMissRefresh,
   doesSpiffeIdMatchPattern,
   extractTrustDomainFromSpiffeId,
   fetchRemoteBundleJwks,
-  isValidSpiffeId
+  isValidSpiffeId,
+  parseSpiffeBundleJwtAuthorities
 } from "./identity-spiffe-auth-fns";
 import {
   FIPS_APPROVED_JWT_ALGORITHMS,
@@ -71,21 +71,28 @@ type TIdentitySpiffeAuthServiceFactoryDep = {
   identityDAL: Pick<TIdentityDALFactory, "findById">;
   identitySpiffeAuthDAL: TIdentitySpiffeAuthDALFactory;
   membershipIdentityDAL: Pick<TMembershipIdentityDALFactory, "findOne" | "update" | "getIdentityById">;
+  keyStore: Pick<TKeyStoreFactory, "setItemWithExpiryNX">;
   identityAccessTokenDAL: Pick<TIdentityAccessTokenDALFactory, "delete">;
-  permissionService: Pick<TPermissionServiceFactory, "getOrgPermission" | "getProjectPermission">;
+  permissionService: Pick<
+    TPermissionServiceFactory,
+    "getOrgPermission" | "getProjectPermission" | "getActorGrantAbilities"
+  >;
   licenseService: Pick<TLicenseServiceFactory, "getPlan">;
   kmsService: Pick<TKmsServiceFactory, "createCipherPairWithDataKey">;
   orgDAL: Pick<TOrgDALFactory, "findById" | "findOne" | "findEffectiveOrgMembership">;
   identityAccessTokenService: Pick<
     TIdentityAccessTokenServiceFactory,
-    "issueIdentityAccessToken" | "revokeTokensForIdentityAuthMethod"
+    "issueIdentityAccessToken" | "revokeTokensForIdentityAuthMethod" | "invalidateTrustedIpsCache"
   >;
+  eventEmitter: TEventEmitter;
 };
 
 export type TIdentitySpiffeAuthServiceFactory = ReturnType<typeof identitySpiffeAuthServiceFactory>;
 
+const JWT_SVID_NO_MATCHING_KEY_MESSAGE = "No key in the SPIFFE trust bundle matches the JWT-SVID signing key";
+
 const verifyJwtSvid = async (jwtValue: string, jwksJson: string, allowedAudiences: string[]) => {
-  const jwks = createLocalJWKSet(JSON.parse(jwksJson) as JSONWebKeySet);
+  const jwks = createLocalJWKSet(parseSpiffeBundleJwtAuthorities(jwksJson));
 
   try {
     const { payload } = await jwtVerify(jwtValue, jwks, {
@@ -102,6 +109,9 @@ const verifyJwtSvid = async (jwtValue: string, jwksJson: string, allowedAudience
     }
     if (error instanceof joseErrors.JWTClaimValidationFailed) {
       throw new UnauthorizedError({ message: "JWT-SVID audience validation failed" });
+    }
+    if (error instanceof joseErrors.JWKSNoMatchingKey) {
+      throw new UnauthorizedError({ message: JWT_SVID_NO_MATCHING_KEY_MESSAGE });
     }
     throw new UnauthorizedError({ message: "JWT-SVID verification failed" });
   }
@@ -132,12 +142,14 @@ export const identitySpiffeAuthServiceFactory = ({
   identityDAL,
   identitySpiffeAuthDAL,
   membershipIdentityDAL,
+  keyStore,
   permissionService,
   licenseService,
   identityAccessTokenDAL,
   kmsService,
   orgDAL,
-  identityAccessTokenService
+  identityAccessTokenService,
+  eventEmitter
 }: TIdentitySpiffeAuthServiceFactoryDep) => {
   type TFlattenedTrustBundle = {
     configurationType: string;
@@ -188,17 +200,13 @@ export const identitySpiffeAuthServiceFactory = ({
 
   const $validateSpiffeConfig = async (dist: TSpiffeTrustBundleDistribution) => {
     if (dist.profile === SpiffeTrustBundleProfile.STATIC) {
-      try {
-        createLocalJWKSet(JSON.parse(dist.bundle) as JSONWebKeySet);
-      } catch {
-        throw new BadRequestError({ message: "The provided CA Bundle JWKS is not valid JWKS" });
-      }
+      parseSpiffeBundleJwtAuthorities(dist.bundle);
       return;
     }
 
     try {
       const bundleJwks = await fetchRemoteBundleJwks(dist.endpointUrl, dist.caCert);
-      createLocalJWKSet(JSON.parse(bundleJwks) as JSONWebKeySet);
+      parseSpiffeBundleJwtAuthorities(bundleJwks);
     } catch (error) {
       if (error instanceof BadRequestError) throw error;
       throw new BadRequestError({
@@ -279,6 +287,8 @@ export const identitySpiffeAuthServiceFactory = ({
       throw new BadRequestError({ message: `Failed to fetch SPIFFE trust bundle from remote endpoint: ${msg}` });
     }
 
+    parseSpiffeBundleJwtAuthorities(bundleJson);
+
     const { cipherTextBlob: encryptedCachedBundleJwks } = orgDataKeyEncryptor({
       plainText: Buffer.from(bundleJson)
     });
@@ -330,8 +340,12 @@ export const identitySpiffeAuthServiceFactory = ({
       try {
         tokenData = await verifyJwtSvid(jwtValue, jwksJson, allowedAudiences);
       } catch (verifyError) {
-        // Kid-miss retry: if we used a cached JWKS and the kid wasn't found, force-refresh once
-        if (fromCache && verifyError instanceof Error && verifyError.message.includes("No key found in JWKS")) {
+        if (
+          fromCache &&
+          verifyError instanceof UnauthorizedError &&
+          verifyError.message === JWT_SVID_NO_MATCHING_KEY_MESSAGE &&
+          (await claimKidMissRefresh(keyStore, identitySpiffeAuth.id))
+        ) {
           ({ jwksJson, fromCache } = await $resolveJwks({
             config: identitySpiffeAuth,
             orgId: identity.orgId,
@@ -405,26 +419,11 @@ export const identitySpiffeAuthServiceFactory = ({
         }
       }
 
-      await identitySpiffeAuthDAL.transaction(async (tx) => {
-        await membershipIdentityDAL.update(
-          identity.projectId
-            ? {
-                scope: AccessScope.Project,
-                scopeOrgId: identity.orgId,
-                scopeProjectId: identity.projectId,
-                actorIdentityId: identity.id
-              }
-            : {
-                scope: AccessScope.Organization,
-                scopeOrgId: identity.orgId,
-                actorIdentityId: identity.id
-              },
-          {
-            lastLoginAuthMethod: IdentityAuthMethod.SPIFFE_AUTH,
-            lastLoginTime: new Date()
-          },
-          tx
-        );
+      await recordIdentityLastLoginDebounced({
+        keyStore,
+        membershipIdentityDAL,
+        identity,
+        lastLoginAuthMethod: IdentityAuthMethod.SPIFFE_AUTH
       });
 
       const subOrgDetails =
@@ -510,8 +509,6 @@ export const identitySpiffeAuthServiceFactory = ({
     actorOrgId,
     isActorSuperAdmin
   }: TAttachSpiffeAuthDTO) => {
-    await validateIdentityUpdateForSuperAdminPrivileges(identityId, isActorSuperAdmin);
-
     const identityMembershipOrg = await membershipIdentityDAL.getIdentityById({
       scopeData: {
         scope: AccessScope.Organization,
@@ -523,6 +520,7 @@ export const identitySpiffeAuthServiceFactory = ({
     if (identityMembershipOrg.identity.orgId !== actorOrgId) {
       throw new ForbiddenRequestError({ message: "Sub organization not authorized to access this identity" });
     }
+
     if (identityMembershipOrg.identity.authMethods.includes(IdentityAuthMethod.SPIFFE_AUTH)) {
       throw new BadRequestError({
         message: "Failed to add SPIFFE Auth to already configured identity"
@@ -533,35 +531,22 @@ export const identitySpiffeAuthServiceFactory = ({
       throw new BadRequestError({ message: "Access token TTL cannot be greater than max TTL" });
     }
 
-    if (identityMembershipOrg.identity.projectId) {
-      const { permission } = await permissionService.getProjectPermission({
-        actionProjectType: ActionProjectType.Any,
-        actor,
-        actorId,
-        projectId: identityMembershipOrg.identity.projectId,
-        actorAuthMethod,
-        actorOrgId
-      });
-
-      ForbiddenError.from(permission).throwUnlessCan(
-        ProjectPermissionIdentityActions.Create,
-        subject(ProjectPermissionSub.Identity, { identityId })
-      );
-    } else {
-      const { permission } = await permissionService.getOrgPermission({
-        scope: OrganizationActionScope.Any,
-        actor,
-        actorId,
+    await assertIdentityAuthAccessAllowed(
+      { permissionService, orgDAL },
+      {
+        identityId,
         orgId: identityMembershipOrg.scopeOrgId,
+        projectId: identityMembershipOrg.identity.projectId,
+        action: OrgPermissionIdentityActions.EditAuth,
+        baseMessage: "Failed to add SPIFFE auth to identity with more privileged role",
+        actor,
+        actorId,
         actorAuthMethod,
         actorOrgId
-      });
+      }
+    );
 
-      ForbiddenError.from(permission).throwUnlessCan(
-        OrgPermissionIdentityActions.Create,
-        OrgPermissionSubjects.Identity
-      );
-    }
+    await validateIdentityUpdateForSuperAdminPrivileges(identityId, isActorSuperAdmin);
 
     const plan = await licenseService.getPlan(identityMembershipOrg.scopeOrgId);
     const reformattedAccessTokenTrustedIps = accessTokenTrustedIps.map((accessTokenTrustedIp) => {
@@ -622,9 +607,21 @@ export const identitySpiffeAuthServiceFactory = ({
         tx
       );
 
+      await emitIdentityAuthMethodChanged(
+        eventEmitter,
+        {
+          membership: identityMembershipOrg,
+          authMethod: IdentityAuthMethod.SPIFFE_AUTH,
+          change: IdentityAuthMethodChange.Added,
+          actor,
+          actorId
+        },
+        tx
+      );
       return doc;
     });
 
+    await identityAccessTokenService.invalidateTrustedIpsCache(identityId, IdentityAuthMethod.SPIFFE_AUTH);
     return {
       ...identitySpiffeAuth,
       orgId: identityMembershipOrg.scopeOrgId,
@@ -649,7 +646,8 @@ export const identitySpiffeAuthServiceFactory = ({
     actorId,
     actorAuthMethod,
     actor,
-    actorOrgId
+    actorOrgId,
+    isActorSuperAdmin
   }: TUpdateSpiffeAuthDTO) => {
     const identityMembershipOrg = await membershipIdentityDAL.getIdentityById({
       scopeData: {
@@ -677,32 +675,22 @@ export const identitySpiffeAuthServiceFactory = ({
       throw new BadRequestError({ message: "Access token TTL cannot be greater than max TTL" });
     }
 
-    if (identityMembershipOrg.identity.projectId) {
-      const { permission } = await permissionService.getProjectPermission({
-        actionProjectType: ActionProjectType.Any,
-        actor,
-        actorId,
-        projectId: identityMembershipOrg.identity.projectId,
-        actorAuthMethod,
-        actorOrgId
-      });
-
-      ForbiddenError.from(permission).throwUnlessCan(
-        ProjectPermissionIdentityActions.Edit,
-        subject(ProjectPermissionSub.Identity, { identityId })
-      );
-    } else {
-      const { permission } = await permissionService.getOrgPermission({
-        scope: OrganizationActionScope.Any,
-        actor,
-        actorId,
+    await assertIdentityAuthAccessAllowed(
+      { permissionService, orgDAL },
+      {
+        identityId,
         orgId: identityMembershipOrg.scopeOrgId,
+        projectId: identityMembershipOrg.identity.projectId,
+        action: OrgPermissionIdentityActions.EditAuth,
+        baseMessage: "Failed to update SPIFFE auth of identity with more privileged role",
+        actor,
+        actorId,
         actorAuthMethod,
         actorOrgId
-      });
+      }
+    );
 
-      ForbiddenError.from(permission).throwUnlessCan(OrgPermissionIdentityActions.Edit, OrgPermissionSubjects.Identity);
-    }
+    await validateIdentityUpdateForSuperAdminPrivileges(identityId, isActorSuperAdmin);
 
     const plan = await licenseService.getPlan(identityMembershipOrg.scopeOrgId);
     const reformattedAccessTokenTrustedIps = accessTokenTrustedIps?.map((accessTokenTrustedIp) => {
@@ -760,7 +748,21 @@ export const identitySpiffeAuthServiceFactory = ({
         : null;
     }
 
-    const updatedSpiffeAuth = await identitySpiffeAuthDAL.updateById(identitySpiffeAuth.id, updateQuery);
+    const updatedSpiffeAuth = await identitySpiffeAuthDAL.transaction(async (tx) => {
+      const doc = await identitySpiffeAuthDAL.updateById(identitySpiffeAuth.id, updateQuery, tx);
+      await emitIdentityAuthMethodChanged(
+        eventEmitter,
+        {
+          membership: identityMembershipOrg,
+          authMethod: IdentityAuthMethod.SPIFFE_AUTH,
+          change: IdentityAuthMethodChange.Updated,
+          actor,
+          actorId
+        },
+        tx
+      );
+      return doc;
+    });
 
     const decryptedCaBundleJwks = updatedSpiffeAuth.encryptedCaBundleJwks
       ? orgDataKeyDecryptor({ cipherTextBlob: updatedSpiffeAuth.encryptedCaBundleJwks }).toString()
@@ -769,6 +771,7 @@ export const identitySpiffeAuthServiceFactory = ({
       ? orgDataKeyDecryptor({ cipherTextBlob: updatedSpiffeAuth.encryptedBundleEndpointCaCert }).toString()
       : "";
 
+    await identityAccessTokenService.invalidateTrustedIpsCache(identityId, IdentityAuthMethod.SPIFFE_AUTH);
     return {
       ...updatedSpiffeAuth,
       orgId: identityMembershipOrg.scopeOrgId,
@@ -854,7 +857,8 @@ export const identitySpiffeAuthServiceFactory = ({
     actorId,
     actor,
     actorAuthMethod,
-    actorOrgId
+    actorOrgId,
+    isActorSuperAdmin
   }: TRevokeSpiffeAuthDTO) => {
     const identityMembershipOrg = await membershipIdentityDAL.getIdentityById({
       scopeData: {
@@ -874,68 +878,38 @@ export const identitySpiffeAuthServiceFactory = ({
       throw new BadRequestError({ message: "The identity does not have SPIFFE auth" });
     }
 
-    if (identityMembershipOrg.identity.projectId) {
-      const { permission } = await permissionService.getProjectPermission({
-        actionProjectType: ActionProjectType.Any,
-        actor,
-        actorId,
+    await assertIdentityAuthAccessAllowed(
+      { permissionService, orgDAL },
+      {
+        identityId,
+        orgId: identityMembershipOrg.scopeOrgId,
         projectId: identityMembershipOrg.identity.projectId,
-        actorAuthMethod,
-        actorOrgId
-      });
-
-      ForbiddenError.from(permission).throwUnlessCan(
-        ProjectPermissionIdentityActions.RevokeAuth,
-        subject(ProjectPermissionSub.Identity, { identityId })
-      );
-    } else {
-      const { permission } = await permissionService.getOrgPermission({
-        scope: OrganizationActionScope.Any,
+        action: OrgPermissionIdentityActions.RevokeAuth,
+        baseMessage: "Failed to revoke SPIFFE auth of identity with more privileged role",
         actor,
         actorId,
-        orgId: identityMembershipOrg.scopeOrgId,
         actorAuthMethod,
         actorOrgId
-      });
+      }
+    );
 
-      ForbiddenError.from(permission).throwUnlessCan(OrgPermissionIdentityActions.Edit, OrgPermissionSubjects.Identity);
-
-      const { permission: rolePermission } = await permissionService.getOrgPermission({
-        scope: OrganizationActionScope.Any,
-        actor: ActorType.IDENTITY,
-        actorId: identityMembershipOrg.identity.id,
-        orgId: identityMembershipOrg.scopeOrgId,
-        actorAuthMethod,
-        actorOrgId
-      });
-
-      const { shouldUseNewPrivilegeSystem } = await requestMemoize(
-        requestMemoKeys.orgFindById(identityMembershipOrg.scopeOrgId),
-        () => orgDAL.findById(identityMembershipOrg.scopeOrgId)
-      );
-      const permissionBoundary = validatePrivilegeChangeOperation(
-        shouldUseNewPrivilegeSystem,
-        OrgPermissionIdentityActions.RevokeAuth,
-        OrgPermissionSubjects.Identity,
-        permission,
-        rolePermission
-      );
-      if (!permissionBoundary.isValid)
-        throw new PermissionBoundaryError({
-          message: constructPermissionErrorMessage(
-            "Failed to revoke SPIFFE auth of identity with more privileged role",
-            shouldUseNewPrivilegeSystem,
-            OrgPermissionIdentityActions.RevokeAuth,
-            OrgPermissionSubjects.Identity
-          ),
-          details: { missingPermissions: permissionBoundary.missingPermissions }
-        });
-    }
+    await validateIdentityUpdateForSuperAdminPrivileges(identityId, isActorSuperAdmin);
 
     const revokedIdentitySpiffeAuth = await identitySpiffeAuthDAL.transaction(async (tx) => {
       const deletedSpiffeAuth = await identitySpiffeAuthDAL.delete({ identityId }, tx);
       await identityAccessTokenDAL.delete({ identityId, authMethod: IdentityAuthMethod.SPIFFE_AUTH }, tx);
 
+      await emitIdentityAuthMethodChanged(
+        eventEmitter,
+        {
+          membership: identityMembershipOrg,
+          authMethod: IdentityAuthMethod.SPIFFE_AUTH,
+          change: IdentityAuthMethodChange.Removed,
+          actor,
+          actorId
+        },
+        tx
+      );
       return deletedSpiffeAuth?.[0];
     });
 
@@ -946,6 +920,7 @@ export const identitySpiffeAuthServiceFactory = ({
       identityId,
       authMethod: IdentityAuthMethod.SPIFFE_AUTH
     });
+    await identityAccessTokenService.invalidateTrustedIpsCache(identityId, IdentityAuthMethod.SPIFFE_AUTH);
 
     const { decryptor: orgDataKeyDecryptor } = await kmsService.createCipherPairWithDataKey({
       type: KmsDataKey.Organization,

@@ -4,19 +4,21 @@ import { OrderByDirection } from "@app/hooks/api/generic/types";
 
 export enum KmsKeyUsage {
   ENCRYPT_DECRYPT = "encrypt-decrypt",
-  SIGN_VERIFY = "sign-verify"
+  SIGN_VERIFY = "sign-verify",
+  GENERATE_VERIFY_MAC = "generate-verify-mac"
 }
 
 export type TCmek = {
   id: string;
   keyUsage: KmsKeyUsage;
   name: string;
-  description?: string;
-  encryptionAlgorithm: AsymmetricKeyAlgorithm | SymmetricKeyAlgorithm;
+  description?: string | null;
+  algorithm: AsymmetricKeyAlgorithm | SymmetricKeyAlgorithm | HmacAlgorithm;
   projectId: string;
   isDisabled: boolean;
   isReserved: boolean;
   isExportable: boolean;
+  hasDeleteProtection: boolean;
   orgId: string;
   version: number;
   createdAt: string;
@@ -26,11 +28,11 @@ export type TCmek = {
 type ProjectRef = { projectId: string };
 type KeyRef = { keyId: string };
 
-export type TCreateCmek = Pick<TCmek, "name" | "description" | "encryptionAlgorithm" | "keyUsage"> &
-  Partial<Pick<TCmek, "isExportable">> &
+export type TCreateCmek = Pick<TCmek, "name" | "description" | "algorithm" | "keyUsage"> &
+  Partial<Pick<TCmek, "isExportable" | "hasDeleteProtection">> &
   ProjectRef;
 export type TUpdateCmek = KeyRef &
-  Partial<Pick<TCmek, "name" | "description" | "isDisabled">> &
+  Partial<Pick<TCmek, "name" | "description" | "isDisabled" | "hasDeleteProtection">> &
   ProjectRef;
 export type TDeleteCmek = KeyRef & ProjectRef;
 export type TRotateCmek = KeyRef & ProjectRef;
@@ -44,6 +46,9 @@ export type TCmekVerify = KeyRef & {
   signature: string;
   signingAlgorithm: SigningAlgorithm;
 };
+
+export type TCmekGenerateMac = KeyRef & { data: string };
+export type TCmekVerifyMac = KeyRef & { data: string; mac: string };
 
 export type TProjectCmeksList = {
   keys: TCmek[];
@@ -75,6 +80,18 @@ export type TCmekVerifyResponse = {
   signingAlgorithm: SigningAlgorithm;
 };
 
+export type TCmekGenerateMacResponse = {
+  mac: string;
+  keyId: string;
+  macAlgorithm: HmacAlgorithm;
+};
+
+export type TCmekVerifyMacResponse = {
+  macValid: boolean;
+  keyId: string;
+  macAlgorithm: HmacAlgorithm;
+};
+
 export type TCmekDecryptResponse = {
   plaintext: string;
 };
@@ -103,7 +120,7 @@ export type TCmekBulkExportedKey = {
   keyId: string;
   name: string;
   keyUsage: KmsKeyUsage;
-  algorithm: AsymmetricKeyAlgorithm | SymmetricKeyAlgorithm;
+  algorithm: AsymmetricKeyAlgorithm | SymmetricKeyAlgorithm | HmacAlgorithm;
   privateKey: string;
   publicKey?: string;
 };
@@ -115,9 +132,10 @@ export type TCmekBulkExportPrivateKeysResponse = {
 export type TCmekBulkImportKeyEntry = {
   name: string;
   keyUsage: KmsKeyUsage;
-  encryptionAlgorithm: AsymmetricKeyAlgorithm | SymmetricKeyAlgorithm;
+  algorithm: AsymmetricKeyAlgorithm | SymmetricKeyAlgorithm | HmacAlgorithm;
   keyMaterial: string;
   isExportable?: boolean;
+  hasDeleteProtection?: boolean;
 };
 
 export type TCmekBulkImportKeysDTO = {
@@ -137,6 +155,7 @@ export enum CmekOrderBy {
 export enum AsymmetricKeyAlgorithm {
   RSA_4096 = "RSA_4096",
   ECC_NIST_P256 = "ECC_NIST_P256",
+  ED25519 = "ED25519",
   ML_DSA_44 = "ML_DSA_44",
   ML_DSA_65 = "ML_DSA_65",
   ML_DSA_87 = "ML_DSA_87"
@@ -148,9 +167,18 @@ export enum SymmetricKeyAlgorithm {
   AES_GCM_128 = "aes-128-gcm"
 }
 
+export enum HmacAlgorithm {
+  HMAC_SHA_1 = "HMAC_SHA_1",
+  HMAC_SHA_224 = "HMAC_SHA_224",
+  HMAC_SHA_256 = "HMAC_SHA_256",
+  HMAC_SHA_384 = "HMAC_SHA_384",
+  HMAC_SHA_512 = "HMAC_SHA_512"
+}
+
 export const AllowedEncryptionKeyAlgorithms = z.enum([
   ...Object.values(SymmetricKeyAlgorithm),
-  ...Object.values(AsymmetricKeyAlgorithm)
+  ...Object.values(AsymmetricKeyAlgorithm),
+  ...Object.values(HmacAlgorithm)
 ] as [string, ...string[]]).options;
 
 export enum SigningAlgorithm {
@@ -168,6 +196,8 @@ export enum SigningAlgorithm {
   ECDSA_SHA_256 = "ECDSA_SHA_256",
   ECDSA_SHA_384 = "ECDSA_SHA_384",
   ECDSA_SHA_512 = "ECDSA_SHA_512",
+
+  ED25519 = "ED25519",
 
   // ML-DSA (post-quantum) — signing algorithm equals key algorithm
   ML_DSA_44 = "ML_DSA_44",

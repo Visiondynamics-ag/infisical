@@ -132,6 +132,12 @@ export const registerUserAdditionalPrivilegeRouter = async (server: FastifyZodPr
       if (!data.privilege.actorUserId)
         throw new NotFoundError({ message: `Privilege with id ${req.params.privilegeId} not found` });
 
+      if (data.privilege.grantId) {
+        throw new BadRequestError({
+          message: "Cannot update a privilege that was granted through an access approval request"
+        });
+      }
+
       const isLinkedToAccessApproval = await server.services.additionalPrivilege.isPrivilegeLinkedToAccessApproval(
         req.params.privilegeId
       );
@@ -254,7 +260,7 @@ export const registerUserAdditionalPrivilegeRouter = async (server: FastifyZodPr
         })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.OAUTH]),
     handler: async (req) => {
       const { userId, membership } = await server.services.convertor.userMembershipIdToUserId(
         req.query.projectMembershipId,
@@ -303,7 +309,7 @@ export const registerUserAdditionalPrivilegeRouter = async (server: FastifyZodPr
         })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.OAUTH]),
     handler: async (req) => {
       const data = await server.services.convertor.additionalPrivilegeIdToDoc(req.params.privilegeId);
       if (!data.privilege.actorUserId)

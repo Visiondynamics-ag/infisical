@@ -53,7 +53,7 @@ export const kmipServerServiceFactory = ({
     ttl?: string;
     keyAlgorithm?: string;
     authMethod:
-      | { method: "aws"; config: { stsEndpoint: string; allowedPrincipalArns: string; allowedAccountIds: string } }
+      | { method: "aws"; config: { allowedPrincipalArns: string; allowedAccountIds: string } }
       | { method: "token" };
     actor: TActor;
   }) => {
@@ -80,7 +80,7 @@ export const kmipServerServiceFactory = ({
   }: {
     kmipServerId: string;
     hostnamesOrIps?: string;
-    ttl?: string;
+    ttl?: string | null;
     keyAlgorithm?: string;
     actor: TActor;
   }) => {

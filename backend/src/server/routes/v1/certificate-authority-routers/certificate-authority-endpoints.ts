@@ -8,6 +8,7 @@ import { getTelemetryDistinctId } from "@app/server/lib/telemetry";
 import { verifyAuth } from "@app/server/plugins/auth/verify-auth";
 import { AuthMode } from "@app/services/auth/auth-type";
 import { CaStatus, CaType } from "@app/services/certificate-authority/certificate-authority-enums";
+import { getCaKeySourceAuditMetadata } from "@app/services/certificate-authority/certificate-authority-fns";
 import {
   TCertificateAuthority,
   TCertificateAuthorityInput
@@ -59,7 +60,7 @@ export const registerCertificateAuthorityEndpoints = <
         200: responseSchema.array()
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
       const projectId = req.query.projectId ?? req.internalCertManagerProjectId;
 
@@ -100,7 +101,7 @@ export const registerCertificateAuthorityEndpoints = <
         200: responseSchema
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
       const { id } = req.params;
 
@@ -140,9 +141,10 @@ export const registerCertificateAuthorityEndpoints = <
         200: responseSchema
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
-      const body = req.body as { projectId?: string };
+      const body = req.body as { projectId?: string; configuration?: { isOcspEnabled?: boolean } };
+      const createdOcspSetting = body.configuration?.isOcspEnabled;
       const certificateAuthority = (await server.services.certificateAuthority.createCertificateAuthority(
         { ...req.body, projectId: body.projectId ?? req.internalCertManagerProjectId, type: caType },
         req.permission
@@ -155,7 +157,9 @@ export const registerCertificateAuthorityEndpoints = <
           type: EventType.CREATE_CA,
           metadata: {
             name: certificateAuthority.name,
-            caId: certificateAuthority.id
+            caId: certificateAuthority.id,
+            ...getCaKeySourceAuditMetadata(certificateAuthority.configuration),
+            ...(typeof createdOcspSetting === "boolean" && { isOcspEnabled: createdOcspSetting })
           }
         }
       });
@@ -166,7 +170,8 @@ export const registerCertificateAuthorityEndpoints = <
         organizationId: req.permission.orgId,
         properties: {
           caType,
-          orgId: req.permission.orgId
+          orgId: req.permission.orgId,
+          projectId: certificateAuthority.projectId
         }
       });
 
@@ -192,9 +197,11 @@ export const registerCertificateAuthorityEndpoints = <
         200: responseSchema
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
       const { id } = req.params;
+      const updatedOcspSetting = (req.body as { configuration?: { isOcspEnabled?: boolean } }).configuration
+        ?.isOcspEnabled;
 
       const certificateAuthority = (await server.services.certificateAuthority.updateCertificateAuthority(
         {
@@ -213,8 +220,21 @@ export const registerCertificateAuthorityEndpoints = <
           metadata: {
             name: certificateAuthority.name,
             caId: certificateAuthority.id,
-            status: certificateAuthority.status
+            status: certificateAuthority.status,
+            ...(typeof updatedOcspSetting === "boolean" && { isOcspEnabled: updatedOcspSetting })
           }
+        }
+      });
+
+      await server.services.telemetry.sendPostHogEvents({
+        event: PostHogEventTypes.CaUpdated,
+        distinctId: getTelemetryDistinctId(req),
+        organizationId: req.permission.orgId,
+        properties: {
+          caType,
+          orgId: req.permission.orgId,
+          projectId: certificateAuthority.projectId,
+          status: certificateAuthority.status
         }
       });
 
@@ -239,7 +259,7 @@ export const registerCertificateAuthorityEndpoints = <
         200: responseSchema
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
       const { id } = req.params;
 
@@ -255,7 +275,8 @@ export const registerCertificateAuthorityEndpoints = <
           type: EventType.DELETE_CA,
           metadata: {
             name: certificateAuthority.name,
-            caId: certificateAuthority.id
+            caId: certificateAuthority.id,
+            ...getCaKeySourceAuditMetadata(certificateAuthority.configuration)
           }
         }
       });
@@ -266,7 +287,8 @@ export const registerCertificateAuthorityEndpoints = <
         organizationId: req.permission.orgId,
         properties: {
           caType,
-          orgId: req.permission.orgId
+          orgId: req.permission.orgId,
+          projectId: certificateAuthority.projectId
         }
       });
 

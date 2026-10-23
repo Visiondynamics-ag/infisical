@@ -16,7 +16,7 @@ infisical:
 
     image:
       # -- Infisical Infisical CLI image tag version
-      tag: "0.41.86"
+      tag: "0.44.6"
 
     # -- Template for the data/stringData section of the Kubernetes secret. Available functions: encodeBase64
     secretTemplate: '{"data":{"token":"{{.Identity.Credentials.Token}}"}}'
@@ -25,8 +25,8 @@ infisical:
       # -- Name of the bootstrap secret to create in the Kubernetes cluster which will store the formatted root identity credentials
       name: "infisical-bootstrap-secret"
 
-      # -- Namespace to create the bootstrap secret in. If not provided, the secret will be created in the same namespace as the release.
-      namespace: "default"
+      # -- Namespace to create the bootstrap secret in. Leave empty to use the release namespace.
+      namespace: ""
 
     # -- Infisical organization to create in the Infisical instance during auto-bootstrap
     organization: "default-org"
@@ -65,7 +65,7 @@ infisical:
     # -- Image repository for the Infisical service
     repository: infisical/infisical
     # -- Specific version tag of the Infisical image. View the latest version here https://hub.docker.com/r/infisical/infisical
-    tag: "v0.158.0"
+    tag: "v0.167.0"
     # -- Pulls image only if not already present on the node
     pullPolicy: IfNotPresent
     # -- Secret references for pulling the image, if needed
@@ -98,6 +98,27 @@ infisical:
   # --   - name: NODE_EXTRA_CA_CERTS
   # --     value: /etc/ssl/certs/ca-certificates.crt
   extraEnv: []
+
+  # -- Pod-level security context for the Infisical pod. Sets only `fsGroup` so mounted volumes
+  # -- are writable by the non-root user. Other hardening lives in `containerSecurityContext`,
+  # -- so `extraContainers` and `extraInitContainers` keep their original user. Set to `null` to omit.
+  podSecurityContext:
+    fsGroup: 1001
+
+  # -- Container-level security context for Infisical's containers, including the bootstrap Job.
+  # -- Secure by default and compliant with the Pod Security "restricted" standard on its own.
+  # -- `readOnlyRootFilesystem` stays false because the app writes temporary files; to enable it,
+  # -- mount emptyDir volumes for writable paths like /tmp via `infisical.extraVolumes` and
+  # -- `infisical.extraVolumeMounts`. Set to `null` to omit.
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    runAsNonRoot: true
+    runAsUser: 1001
+    seccompProfile:
+      type: RuntimeDefault
+    capabilities:
+      drop: ["ALL"]
 
   resources:
     limits:

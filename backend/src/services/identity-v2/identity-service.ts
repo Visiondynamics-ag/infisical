@@ -1,6 +1,7 @@
 import {
   AccessScope,
   ActionProjectType,
+  getAdminMemberOnlyProductLabel,
   OrganizationActionScope,
   OrgMembershipRole,
   ProjectMembershipRole,
@@ -8,6 +9,7 @@ import {
   TemporaryPermissionMode,
   TMembershipRolesInsert
 } from "@app/db/schemas";
+import { getEnforcedIdentityLimit } from "@app/ee/services/license/license-fns";
 import { TLicenseServiceFactory } from "@app/ee/services/license/license-service";
 import {
   OrgPermissionAdminConsoleAction,
@@ -30,14 +32,20 @@ import { groupBy } from "@app/lib/fn";
 import { ms } from "@app/lib/ms";
 import { requestMemoKeys } from "@app/lib/request-context/memo-keys";
 import { requestMemoize } from "@app/lib/request-context/request-memoizer";
+import { TAlertServiceFactory } from "@app/services/alert/alert-service";
+import { IDENTITY_AUTHENTICATION_RESOURCE_TYPE } from "@app/services/alert/providers/identity-credential-alert-provider";
+import { AgentVaultIdentities, IdentitiesMeter, PamIdentities, SecretIdentities } from "@app/services/license-client";
+import { TUsageMeteringServiceFactory } from "@app/services/license-client/usage";
 import { TOrgDALFactory } from "@app/services/org/org-dal";
 import { TProjectDALFactory } from "@app/services/project/project-dal";
 import { TRoleDALFactory } from "@app/services/role/role-dal";
+import { validateIdentityUpdateForSuperAdminPrivileges } from "@app/services/super-admin/super-admin-fns";
 
 import { ActorType } from "../auth/auth-type";
 import { getIdentityActiveLockoutAuthMethods } from "../identity/identity-fns";
 import { TIdentityMetadataDALFactory } from "../identity/identity-metadata-dal";
 import { TIdentityAccessTokenServiceFactory } from "../identity-access-token/identity-access-token-service";
+import { assertProductWillRetainAdmin, filterRolesNeedingPrivilegeBoundary } from "../membership/membership-fns";
 import { TMembershipRoleDALFactory } from "../membership/membership-role-dal";
 import { TMembershipIdentityDALFactory } from "../membership-identity/membership-identity-dal";
 import { TIdentityV2DALFactory } from "./identity-dal";
@@ -60,15 +68,20 @@ type TScopedIdentityV2ServiceFactoryDep = {
   identityDAL: TIdentityV2DALFactory;
   identityMembershipV2DAL: TIdentityMembershipV2DALFactory;
   permissionService: TPermissionServiceFactory;
-  licenseService: Pick<TLicenseServiceFactory, "getPlan" | "updateSubscriptionOrgMemberCount">;
+  licenseService: Pick<TLicenseServiceFactory, "getPlan" | "getOrgSeatUsage" | "updateSubscriptionOrgMemberCount">;
   membershipIdentityDAL: TMembershipIdentityDALFactory;
   membershipRoleDAL: TMembershipRoleDALFactory;
   identityMetadataDAL: TIdentityMetadataDALFactory;
-  identityAccessTokenService: Pick<TIdentityAccessTokenServiceFactory, "revokeAllTokensForIdentity">;
-  keyStore: Pick<TKeyStoreFactory, "getKeysByPattern" | "getItem">;
+  identityAccessTokenService: Pick<
+    TIdentityAccessTokenServiceFactory,
+    "insertIdentityWideRevocationMarker" | "bumpIdentityRevocationVersion"
+  >;
+  keyStore: Pick<TKeyStoreFactory, "sortedSetRangeByScore">;
   projectDAL: Pick<TProjectDALFactory, "findActorAccessibleProjectIds" | "findOrgProjectIds" | "findById">;
   orgDAL: Pick<TOrgDALFactory, "findById">;
   roleDAL: Pick<TRoleDALFactory, "find">;
+  usageMeteringService: Pick<TUsageMeteringServiceFactory, "emit" | "emitForProject">;
+  alertService: Pick<TAlertServiceFactory, "deleteAlertsForDeletedResource">;
 };
 
 export type TScopedIdentityV2ServiceFactory = ReturnType<typeof identityV2ServiceFactory>;
@@ -85,13 +98,19 @@ export const identityV2ServiceFactory = ({
   keyStore,
   projectDAL,
   orgDAL,
-  roleDAL
+  roleDAL,
+  usageMeteringService,
+  alertService
 }: TScopedIdentityV2ServiceFactoryDep) => {
   const orgFactory = newOrgIdentityFactory({
-    permissionService
+    permissionService,
+    orgDAL,
+    membershipIdentityDAL
   });
   const projectFactory = newProjectIdentityFactory({
-    permissionService
+    permissionService,
+    orgDAL,
+    membershipIdentityDAL
   });
 
   const scopeFactory = {
@@ -106,13 +125,15 @@ export const identityV2ServiceFactory = ({
     await factory.onCreateIdentityGuard(dto);
 
     const plan = await licenseService.getPlan(dto.permission.orgId);
-    const isEnterpriseBypass = plan?.slug === "enterprise" && !plan?.enforceIdentityLimit;
-
-    if (!isEnterpriseBypass && plan?.identityLimit && plan.identitiesUsed >= plan.identityLimit) {
-      // limit imposed on number of identities allowed / number of identities used exceeds the number of identities allowed
-      throw new BadRequestError({
-        message: "Failed to create identity due to identity limit reached. Upgrade plan to create more identities."
-      });
+    const identityLimit = getEnforcedIdentityLimit(plan);
+    if (identityLimit) {
+      const { identitiesUsed } = await licenseService.getOrgSeatUsage(dto.permission.orgId);
+      if (identitiesUsed >= identityLimit) {
+        // limit imposed on number of identities allowed / number of identities used exceeds the number of identities allowed
+        throw new BadRequestError({
+          message: "Failed to create identity due to identity limit reached. Upgrade plan to create more identities."
+        });
+      }
     }
 
     let resolvedRoleDocs: Omit<TMembershipRolesInsert, "membershipId">[] | null = null;
@@ -135,12 +156,15 @@ export const identityV2ServiceFactory = ({
       const project = await requestMemoize(requestMemoKeys.projectFindById(scopeData.projectId), () =>
         projectDAL.findById(scopeData.projectId)
       );
-      if (project?.type === ProjectType.CertificateManager) {
+      const adminMemberOnlyLabel = getAdminMemberOnlyProductLabel(project?.type);
+      if (adminMemberOnlyLabel) {
         const invalidRoles = data.roles.filter(
           (r) => r.role !== ProjectMembershipRole.Admin && r.role !== ProjectMembershipRole.Member
         );
         if (invalidRoles.length > 0) {
-          throw new BadRequestError({ message: "Certificate Manager only supports Admin and Member roles." });
+          throw new BadRequestError({
+            message: `${adminMemberOnlyLabel} only supports Admin and Member roles.`
+          });
         }
       }
 
@@ -150,30 +174,28 @@ export const identityV2ServiceFactory = ({
       );
 
       const permissionRoles = await permissionService.getProjectPermissionByRoles(
-        data.roles.map((el) => el.role),
+        filterRolesNeedingPrivilegeBoundary(data.roles).map((el) => el.role),
         scopeData.projectId
       );
       for (const permissionRole of permissionRoles) {
-        if (permissionRole?.role?.slug !== ProjectMembershipRole.NoAccess) {
-          const permissionBoundary = validatePrivilegeChangeOperation(
-            shouldUseNewPrivilegeSystem,
-            [ProjectPermissionIdentityActions.AssignRole, ProjectPermissionIdentityActions.GrantPrivileges],
-            ProjectPermissionSub.Identity,
-            actorPermission,
-            permissionRole.permission,
-            { assignableRole: permissionRole.role?.slug }
-          );
-          if (!permissionBoundary.isValid) {
-            throw new PermissionBoundaryError({
-              message: constructPermissionErrorMessage(
-                "Failed to create identity project membership",
-                shouldUseNewPrivilegeSystem,
-                ProjectPermissionIdentityActions.AssignRole,
-                ProjectPermissionSub.Identity
-              ),
-              details: { missingPermissions: permissionBoundary.missingPermissions }
-            });
-          }
+        const permissionBoundary = validatePrivilegeChangeOperation(
+          shouldUseNewPrivilegeSystem,
+          [ProjectPermissionIdentityActions.AssignRole, ProjectPermissionIdentityActions.GrantPrivileges],
+          ProjectPermissionSub.Identity,
+          actorPermission,
+          permissionRole.permission,
+          { assignableRole: permissionRole.role?.slug }
+        );
+        if (!permissionBoundary.isValid) {
+          throw new PermissionBoundaryError({
+            message: constructPermissionErrorMessage(
+              "Failed to create identity project membership",
+              shouldUseNewPrivilegeSystem,
+              ProjectPermissionIdentityActions.AssignRole,
+              ProjectPermissionSub.Identity
+            ),
+            details: { missingPermissions: permissionBoundary.missingPermissions }
+          });
         }
       }
 
@@ -225,7 +247,11 @@ export const identityV2ServiceFactory = ({
     let projectMemberRole = ProjectMembershipRole.NoAccess as string;
     if (scopeData.scope === AccessScope.Project && !resolvedRoleDocs) {
       const project = await projectDAL.findById(scopeData.projectId);
-      if (project?.type === ProjectType.CertificateManager) {
+      if (
+        project?.type === ProjectType.CertificateManager ||
+        project?.type === ProjectType.PAM ||
+        project?.type === ProjectType.AgentVault
+      ) {
         projectMemberRole = ProjectMembershipRole.Member;
       }
     }
@@ -292,6 +318,15 @@ export const identityV2ServiceFactory = ({
     });
     await licenseService.updateSubscriptionOrgMemberCount(dto.permission.orgId);
 
+    // A new identity always adds an org membership; a project-scoped one also joins that project, so
+    // it counts toward the secret-manager and PAM identity meters too.
+    usageMeteringService.emit(dto.permission.orgId, IdentitiesMeter.key);
+    if (scopeData.scope === AccessScope.Project) {
+      usageMeteringService.emitForProject(scopeData.projectId, SecretIdentities.key);
+      usageMeteringService.emitForProject(scopeData.projectId, PamIdentities.key);
+      usageMeteringService.emitForProject(scopeData.projectId, AgentVaultIdentities.key);
+    }
+
     return { identity };
   };
 
@@ -300,6 +335,7 @@ export const identityV2ServiceFactory = ({
     const factory = scopeFactory[scopeData.scope];
 
     await factory.onUpdateIdentityGuard(dto);
+
     const existingIdentity = await identityDAL.findOne({
       id: dto.selector.identityId,
       orgId: dto.permission.orgId,
@@ -308,9 +344,13 @@ export const identityV2ServiceFactory = ({
     if (!existingIdentity)
       throw new NotFoundError({ message: `Identity with id ${dto.selector.identityId} not found` });
 
+    await validateIdentityUpdateForSuperAdminPrivileges(dto.selector.identityId, dto.isActorSuperAdmin);
+
     const identity = await identityDAL.transaction(async (tx) => {
+      // Compared against undefined: `hasDeleteProtection: false` is a real update, and a truthiness check
+      // could never turn the flag off.
       const updatedIdentity =
-        data?.name || data?.hasDeleteProtection
+        data?.name !== undefined || data?.hasDeleteProtection !== undefined
           ? await identityDAL.updateById(
               dto.selector.identityId,
               { name: data.name, hasDeleteProtection: data.hasDeleteProtection },
@@ -361,17 +401,53 @@ export const identityV2ServiceFactory = ({
     });
     if (!existingIdentity)
       throw new NotFoundError({ message: `Identity with id ${dto.selector.identityId} not found` });
+
+    await validateIdentityUpdateForSuperAdminPrivileges(dto.selector.identityId, dto.isActorSuperAdmin);
     if (existingIdentity.hasDeleteProtection) {
       throw new BadRequestError({ message: "Cannot delete identity while delete protection is enabled" });
     }
 
-    // Set the identity-wide PG revocation epoch before removing the row so
-    // any JWT issued for this identity (with iat < now) is rejected.
-    await identityAccessTokenService.revokeAllTokensForIdentity(dto.selector.identityId);
+    // Set the identity-wide PG revocation epoch atomically with the row delete
+    // so any JWT issued for this identity (with iat < now) is rejected.
+    const deletedIdentity = await identityDAL.transaction(async (tx) => {
+      if (scopeData.scope === AccessScope.Project) {
+        const project = await projectDAL.findById(scopeData.projectId, tx);
+        if (getAdminMemberOnlyProductLabel(project?.type)) {
+          const memberships = await membershipIdentityDAL.find(
+            {
+              scope: AccessScope.Project,
+              scopeProjectId: scopeData.projectId,
+              actorIdentityId: dto.selector.identityId
+            },
+            { tx }
+          );
+          await assertProductWillRetainAdmin({
+            project,
+            excludeMembershipIds: memberships.map(({ id }) => id),
+            tx
+          });
+        }
+      }
+      await identityAccessTokenService.insertIdentityWideRevocationMarker({ identityId: dto.selector.identityId, tx });
 
-    const deletedIdentity = await identityDAL.deleteById(dto.selector.identityId);
+      await alertService.deleteAlertsForDeletedResource(
+        {
+          resourceType: IDENTITY_AUTHENTICATION_RESOURCE_TYPE,
+          resourceId: dto.selector.identityId
+        },
+        tx
+      );
+      return identityDAL.deleteById(dto.selector.identityId, tx);
+    });
+    await identityAccessTokenService.bumpIdentityRevocationVersion({ identityId: dto.selector.identityId });
 
     await licenseService.updateSubscriptionOrgMemberCount(scopeData.orgId);
+
+    // Deleting the identity cascades its org + project + group memberships, so all meters change.
+    usageMeteringService.emit(scopeData.orgId, IdentitiesMeter.key);
+    usageMeteringService.emit(scopeData.orgId, SecretIdentities.key);
+    usageMeteringService.emit(scopeData.orgId, PamIdentities.key);
+    usageMeteringService.emit(scopeData.orgId, AgentVaultIdentities.key);
 
     return { identity: deletedIdentity };
   };

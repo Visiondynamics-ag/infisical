@@ -1,6 +1,6 @@
 import crypto from "crypto";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Controller, useFieldArray, useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -41,7 +41,7 @@ import {
   TooltipTrigger
 } from "@app/components/v3";
 import { useProject } from "@app/context";
-import { useTimedReset } from "@app/hooks";
+import { useScopeVariant, useTimedReset } from "@app/hooks";
 import { useCreateServiceToken } from "@app/hooks/api";
 import { UsePopUpState } from "@app/hooks/usePopUp";
 
@@ -92,7 +92,9 @@ type Props = {
 };
 
 const ServiceTokenForm = () => {
+  const scopeVariant = useScopeVariant();
   const { t } = useTranslation();
+  const fieldId = useId();
 
   const { currentProject } = useProject();
   const {
@@ -158,13 +160,16 @@ const ServiceTokenForm = () => {
         onSubmit={handleSubmit(onFormSubmit)}
         className="flex flex-1 flex-col overflow-hidden"
       >
-        <div className="flex thin-scrollbar flex-1 flex-col gap-4 overflow-y-auto p-4">
+        <div className="relative flex thin-scrollbar flex-1 flex-col gap-4 overflow-y-auto p-4">
           {hasServiceToken ? (
             <>
               <Field>
-                <FieldLabel>{t("section.token.add-dialog.copy-service-token")}</FieldLabel>
+                <FieldLabel htmlFor={`${fieldId}-token`}>
+                  {t("section.token.add-dialog.copy-service-token")}
+                </FieldLabel>
                 <ButtonGroup className="w-full">
                   <Input
+                    id={`${fieldId}-token`}
                     value={newToken}
                     readOnly
                     aria-label="Service token"
@@ -200,13 +205,18 @@ const ServiceTokenForm = () => {
                 defaultValue=""
                 render={({ field, fieldState: { error } }) => (
                   <Field>
-                    <FieldLabel>{t("section.token.add-dialog.name")}</FieldLabel>
+                    <FieldLabel htmlFor={`${fieldId}-name`}>
+                      {t("section.token.add-dialog.name")}
+                    </FieldLabel>
                     <FieldContent>
                       <Input
                         {...field}
+                        id={`${fieldId}-name`}
                         autoFocus
                         isError={Boolean(error)}
                         placeholder="Type your token name"
+                        autoComplete="off"
+                        name="service-token-name"
                       />
                       <FieldError errors={[error]} />
                     </FieldContent>
@@ -222,10 +232,19 @@ const ServiceTokenForm = () => {
                       defaultValue={currentProject?.environments?.[0]?.slug}
                       render={({ field: { value, onChange }, fieldState: { error } }) => (
                         <Field className="min-w-0 flex-1">
-                          {index === 0 && <FieldLabel>Environment</FieldLabel>}
+                          <FieldLabel
+                            htmlFor={`${fieldId}-scope-${index}-environment`}
+                            className={index === 0 ? undefined : "sr-only"}
+                          >
+                            Environment
+                          </FieldLabel>
                           <FieldContent>
                             <Select value={value} onValueChange={onChange}>
-                              <SelectTrigger isError={Boolean(error)} className="w-full">
+                              <SelectTrigger
+                                id={`${fieldId}-scope-${index}-environment`}
+                                isError={Boolean(error)}
+                                className="w-full"
+                              >
                                 <SelectValue placeholder="Select environment">
                                   <span className="truncate">
                                     {
@@ -254,10 +273,16 @@ const ServiceTokenForm = () => {
                       defaultValue="/"
                       render={({ field, fieldState: { error } }) => (
                         <Field className="min-w-0 flex-1">
-                          {index === 0 && <FieldLabel>Secrets Path</FieldLabel>}
+                          <FieldLabel
+                            htmlFor={`${fieldId}-scope-${index}-secret-path`}
+                            className={index === 0 ? undefined : "sr-only"}
+                          >
+                            Secrets Path
+                          </FieldLabel>
                           <FieldContent>
                             <Input
                               {...field}
+                              id={`${fieldId}-scope-${index}-secret-path`}
                               isError={Boolean(error)}
                               placeholder="can be /, /nested/**, /**/deep"
                             />
@@ -313,10 +338,14 @@ const ServiceTokenForm = () => {
                 defaultValue={String(apiTokenExpiry?.[0]?.value)}
                 render={({ field: { value, onChange }, fieldState: { error } }) => (
                   <Field>
-                    <FieldLabel>Expiration</FieldLabel>
+                    <FieldLabel htmlFor={`${fieldId}-expiration`}>Expiration</FieldLabel>
                     <FieldContent>
                       <Select value={value} onValueChange={onChange}>
-                        <SelectTrigger isError={Boolean(error)} className="w-full">
+                        <SelectTrigger
+                          id={`${fieldId}-expiration`}
+                          isError={Boolean(error)}
+                          className="w-full"
+                        >
                           <SelectValue placeholder="Select expiration" />
                         </SelectTrigger>
                         <SelectContent>
@@ -350,7 +379,7 @@ const ServiceTokenForm = () => {
                         <Field key={optionValue} orientation="horizontal">
                           <Checkbox
                             id={`permission-${optionValue}`}
-                            variant="project"
+                            variant={scopeVariant}
                             isChecked={value[optionValue]}
                             isDisabled={optionValue === "read"}
                             onCheckedChange={(state) =>
@@ -377,29 +406,29 @@ const ServiceTokenForm = () => {
           )}
         </div>
       </form>
-      <SheetFooter className="border-t">
+      <SheetFooter className="justify-end border-t">
         {hasServiceToken ? (
           <SheetClose asChild>
-            <Button type="button" variant="project">
+            <Button type="button" variant={scopeVariant}>
               Done
             </Button>
           </SheetClose>
         ) : (
           <>
-            <Button
-              type="submit"
-              form="add-service-token-form"
-              variant="project"
-              isPending={isSubmitting}
-              isDisabled={isSubmitting}
-            >
-              Create
-            </Button>
             <SheetClose asChild>
               <Button type="button" variant="outline" isDisabled={isSubmitting}>
                 Cancel
               </Button>
             </SheetClose>
+            <Button
+              type="submit"
+              form="add-service-token-form"
+              variant={scopeVariant}
+              isPending={isSubmitting}
+              isDisabled={isSubmitting}
+            >
+              Create
+            </Button>
           </>
         )}
       </SheetFooter>

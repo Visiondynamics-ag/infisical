@@ -1,52 +1,62 @@
-import { faArrowUpRightFromSquare, faWarning, faXmark } from "@fortawesome/free-solid-svg-icons";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { ReactNode } from "react";
+import { ExternalLinkIcon, TriangleAlertIcon, XIcon } from "lucide-react";
 
-import { IconButton } from "@app/components/v2";
+import { IconButton } from "@app/components/v3";
 import { useToggle } from "@app/hooks";
 
 type Props = {
-  text: string;
+  text: ReactNode;
   link?: string;
+  action?: ReactNode;
+  role?: "status" | "alert";
+  isDismissible?: boolean;
+  onDismiss?: () => void;
 };
 
-export const OrgAlertBanner = ({ text, link }: Props) => {
+export const OrgAlertBanner = ({
+  text,
+  link,
+  action,
+  role = "status",
+  isDismissible = true,
+  onDismiss
+}: Props) => {
   const [isDismissed, setIsDismissed] = useToggle(false);
 
   if (isDismissed) return null;
 
   return (
-    <div className="flex w-full items-center border-b border-yellow/50 bg-yellow/30 px-4 py-2 text-sm text-yellow-200">
-      <FontAwesomeIcon icon={faWarning} className="mr-2.5 text-base text-yellow" />
-      {text}{" "}
-      {link && (
-        <>
-          Learn how to configure it
+    <div
+      role={role}
+      className="flex w-full items-start gap-2 border-b border-warning/20 bg-warning/5 px-4 py-2 text-sm text-foreground"
+    >
+      <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" />
+      <p className="min-w-0 flex-1">
+        {text}{" "}
+        {link && (
           <a
             href={link}
             rel="noopener noreferrer"
             target="_blank"
-            className="group flex items-center"
+            className="inline-flex items-center gap-1 underline underline-offset-2 hover:text-warning"
           >
-            <span className="cursor-pointer pl-1 underline underline-offset-2 duration-100 group-hover:text-mineshaft-100 group-hover:decoration-mineshaft-100">
-              here
-            </span>
-            <FontAwesomeIcon
-              className="mt-[0.12rem] ml-1 group-hover:text-mineshaft-100"
-              icon={faArrowUpRightFromSquare}
-              size="xs"
-            />
+            Configuration documentation
+            <ExternalLinkIcon className="size-3" />
           </a>
-          .
-        </>
+        )}
+      </p>
+      {action && <div className="-my-1 shrink-0">{action}</div>}
+      {isDismissible && (
+        <IconButton
+          className="-my-1 -mr-1"
+          aria-label="Dismiss warning"
+          variant="ghost-muted"
+          size="xs"
+          onClick={onDismiss ?? setIsDismissed.on}
+        >
+          <XIcon />
+        </IconButton>
       )}
-      <IconButton
-        className="ml-auto p-0 text-yellow-200"
-        ariaLabel="Dismiss banner"
-        variant="plain"
-        onClick={() => setIsDismissed.on()}
-      >
-        <FontAwesomeIcon icon={faXmark} />
-      </IconButton>
     </div>
   );
 };

@@ -74,7 +74,7 @@ export const userNotificationDALFactory = (db: TDbClient) => {
       try {
         // eslint-disable-next-line no-await-in-loop
         deletedNotificationIds = await db.transaction(async (trx) => {
-          await trx.raw(`SET statement_timeout = ${QUERY_TIMEOUT_MS}`);
+          await trx.raw(`SET LOCAL statement_timeout = ${QUERY_TIMEOUT_MS}`);
 
           const findExpiredNotificationSubQuery = trx(TableName.UserNotifications)
             .where("createdAt", "<", threeMonthsAgo)
@@ -125,5 +125,18 @@ export const userNotificationDALFactory = (db: TDbClient) => {
       .update({ isRead: true });
   };
 
-  return { ...notificationOrm, pruneNotifications, find, markAllNotificationsAsRead };
+  const deleteAllNotifications = async (userId: string, orgId: string) => {
+    try {
+      await db(TableName.UserNotifications)
+        .where({ userId, isRead: true })
+        .andWhere((qb) => {
+          void qb.where({ orgId }).orWhereNull("orgId");
+        })
+        .delete();
+    } catch (error) {
+      throw new DatabaseError({ error });
+    }
+  };
+
+  return { ...notificationOrm, pruneNotifications, find, markAllNotificationsAsRead, deleteAllNotifications };
 };

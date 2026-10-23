@@ -1,8 +1,12 @@
+import { useState } from "react";
 import { PlusIcon } from "lucide-react";
 
+import {
+  CertificateAuthoritiesUpgradeIntent,
+  useUpgradeGate
+} from "@app/components/license/UpgradeGate";
 import { createNotification } from "@app/components/notifications";
 import { ProjectPermissionCan } from "@app/components/permissions";
-import { DeleteActionModal } from "@app/components/v2";
 import {
   Button,
   Card,
@@ -13,32 +17,90 @@ import {
   CardTitle,
   DocumentationLinkBadge
 } from "@app/components/v3";
+import { ConfirmationAlertDialog } from "@app/components/v3/platform";
 import {
   ProjectPermissionCertificateAuthorityActions,
   ProjectPermissionSub,
   useProject
 } from "@app/context";
-import { CaStatus, CaType, useDeleteCa, useUpdateCa } from "@app/hooks/api";
+import {
+  CaStatus,
+  CaType,
+  useDeleteCa,
+  useGetCa,
+  useGetCaQuota,
+  useUpdateCa
+} from "@app/hooks/api";
+import { TInternalCertificateAuthority } from "@app/hooks/api/ca/types";
+import { CertKeySource } from "@app/hooks/api/signers";
 import { usePopUp } from "@app/hooks/usePopUp";
 
 import { PkiDocsUrls } from "../../pki-docs-urls";
+import { CreateCaWizard } from "./CreateCaWizard/CreateCaWizard";
 import { CaCertModal } from "./CaCertModal";
 import { CaInstallCertModal } from "./CaInstallCertModal";
-import { CaModal } from "./CaModal";
 import { CaTable } from "./CaTable";
 
 export const CaSection = () => {
   const { currentProject } = useProject();
   const { mutateAsync: deleteCa } = useDeleteCa();
   const { mutateAsync: updateCa } = useUpdateCa();
+  const [isCreateWizardOpen, setIsCreateWizardOpen] = useState(false);
 
   const { popUp, handlePopUpOpen, handlePopUpClose, handlePopUpToggle } = usePopUp([
-    "ca",
     "caCert",
     "installCaCert",
     "deleteCa",
     "caStatus" // enable / disable
   ] as const);
+  const { openUpgradeGate, upgradeGate } = useUpgradeGate();
+
+  const { data: caQuota } = useGetCaQuota();
+  // An internal CA counts against both caps, so whichever runs out first blocks it. The message names
+  // that one, since "1 of 1 internal CAs" and "1 of 1 CAs" call for different upgrades.
+  const exhausted = [
+    {
+      key: "maxCas" as const,
+      one: "certificate authority",
+      many: "certificate authorities",
+      ...caQuota?.certificateAuthorities
+    },
+    {
+      key: "maxInternalCas" as const,
+      one: "internal certificate authority",
+      many: "internal certificate authorities",
+      ...caQuota?.internalCertificateAuthorities
+    }
+  ].find((entry) => typeof entry.limit === "number" && (entry.used ?? 0) >= entry.limit);
+
+  const handleCreateCa = () => {
+    if (exhausted) {
+      // The allowance is shared across the organization and any sub-organizations, while this table
+      // shows one project, so the count is named rather than left to look like a mismatch.
+      openUpgradeGate({
+        intent: CertificateAuthoritiesUpgradeIntent,
+        paywallKey: "cert-manager.ca"
+      });
+      return;
+    }
+    setIsCreateWizardOpen(true);
+  };
+
+  const deleteCaId = (popUp?.deleteCa?.data as { caId?: string })?.caId;
+  const { data: caPendingDeleteData } = useGetCa({
+    caId: deleteCaId ?? "",
+    type: CaType.INTERNAL,
+    options: { enabled: popUp.deleteCa.isOpen && Boolean(deleteCaId) }
+  });
+  const caPendingDelete = caPendingDeleteData as TInternalCertificateAuthority | undefined;
+  const pendingDeleteHsmKeyLabel =
+    caPendingDelete?.configuration?.keySource === CertKeySource.Hsm
+      ? caPendingDelete?.configuration?.externalKeyId
+      : undefined;
+  const pendingDeleteAwsKmsKeyArn =
+    caPendingDelete?.configuration?.keySource === CertKeySource.AwsKms
+      ? caPendingDelete?.configuration?.externalKeyId
+      : undefined;
 
   const onRemoveCaSubmit = async (id: string) => {
     if (!currentProject?.slug) return;
@@ -67,7 +129,7 @@ export const CaSection = () => {
   };
 
   return (
-    <Card className="mb-6">
+    <Card>
       <CardHeader>
         <CardTitle>
           Internal Certificate Authorities
@@ -83,13 +145,9 @@ export const CaSection = () => {
             a={ProjectPermissionSub.CertificateAuthorities}
           >
             {(isAllowed) => (
-              <Button
-                variant="project"
-                onClick={() => handlePopUpOpen("ca")}
-                isDisabled={!isAllowed}
-              >
+              <Button variant="project" onClick={handleCreateCa} isDisabled={!isAllowed}>
                 <PlusIcon />
-                Create CA
+                Create Internal CA
               </Button>
             )}
           </ProjectPermissionCan>
@@ -98,35 +156,44 @@ export const CaSection = () => {
       <CardContent>
         <CaTable handlePopUpOpen={handlePopUpOpen} />
       </CardContent>
-      <CaModal popUp={popUp} handlePopUpToggle={handlePopUpToggle} />
+      <CreateCaWizard isOpen={isCreateWizardOpen} onOpenChange={setIsCreateWizardOpen} />
+      {upgradeGate}
       <CaInstallCertModal popUp={popUp} handlePopUpToggle={handlePopUpToggle} />
       <CaCertModal popUp={popUp} handlePopUpToggle={handlePopUpToggle} />
-      <DeleteActionModal
+      <ConfirmationAlertDialog
         isOpen={popUp.deleteCa.isOpen}
         title={`Are you sure you want to remove the CA ${
           (popUp?.deleteCa?.data as { dn: string })?.dn || ""
         }?`}
-        subTitle="This action will delete other CAs and certificates below it in your CA hierarchy."
-        onChange={(isOpen) => handlePopUpToggle("deleteCa", isOpen)}
-        deleteKey="confirm"
-        onDeleteApproved={() => onRemoveCaSubmit((popUp?.deleteCa?.data as { caId: string })?.caId)}
+        description={`This action will delete other CAs and certificates below it in your CA hierarchy.${
+          pendingDeleteHsmKeyLabel
+            ? ` This CA's key on the HSM (label: ${pendingDeleteHsmKeyLabel}) is not removed automatically and will remain as an orphaned key.`
+            : ""
+        }${
+          pendingDeleteAwsKmsKeyArn
+            ? ` Deleting this CA also schedules its signing key (${pendingDeleteAwsKmsKeyArn}) for deletion in AWS KMS. You can cancel that deletion in AWS KMS within 30 days.`
+            : ""
+        }`}
+        onOpenChange={(isOpen) => handlePopUpToggle("deleteCa", isOpen)}
+        confirmKey="confirm"
+        onConfirm={() => onRemoveCaSubmit((popUp?.deleteCa?.data as { caId: string })?.caId)}
       />
-      <DeleteActionModal
+      <ConfirmationAlertDialog
         isOpen={popUp.caStatus.isOpen}
         title={`Are you sure you want to ${
           (popUp?.caStatus?.data as { status: string })?.status === CaStatus.ACTIVE
             ? "enable"
             : "disable"
         } the CA ${(popUp?.caStatus?.data as { dn: string })?.dn || ""}?`}
-        subTitle={
+        description={
           (popUp?.caStatus?.data as { status: string })?.status === CaStatus.ACTIVE
             ? "This action will allow the CA to start issuing certificates again."
             : "This action will prevent the CA from issuing new certificates."
         }
-        onChange={(isOpen) => handlePopUpToggle("caStatus", isOpen)}
-        buttonText="Confirm"
-        deleteKey="confirm"
-        onDeleteApproved={() =>
+        onOpenChange={(isOpen) => handlePopUpToggle("caStatus", isOpen)}
+        confirmLabel="Confirm"
+        confirmKey="confirm"
+        onConfirm={() =>
           onUpdateCaStatus(popUp?.caStatus?.data as { caId: string; status: CaStatus })
         }
       />

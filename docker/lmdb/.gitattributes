@@ -1,0 +1,2 @@
+# Unified-diff context is data; preserve the exact maintainer patch bytes.
+*.patch -whitespace

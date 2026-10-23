@@ -1,11 +1,13 @@
 export type TGatewayV2ConnectionDetails = {
-  relayHost: string;
+  gatewayId: string;
+  directAddress?: string;
+  relayHost?: string;
   gateway: {
     clientCertificate: string;
     clientPrivateKey: string;
     serverCertificateChain: string;
   };
-  relay: {
+  relay?: {
     clientCertificate: string;
     clientPrivateKey: string;
     serverCertificateChain: string;
@@ -29,32 +31,10 @@ export type TGatewayConnectedDynamicSecret = {
   environmentSlug?: string;
 };
 
-export type TGatewayConnectedPamResource = {
-  id: string;
-  name: string;
-  projectId: string;
-  projectName?: string;
-  resourceType: string;
-};
-
-export type TGatewayConnectedPamDiscoverySource = {
-  id: string;
-  name: string;
-  projectId: string;
-  projectName?: string;
-};
-
 export type TGatewayConnectedKubernetesAuth = {
   id: string;
   identityId: string;
   identityName: string;
-};
-
-export type TGatewayConnectedMcpServer = {
-  id: string;
-  name: string;
-  projectId: string;
-  projectName?: string;
 };
 
 export type TGatewayConnectedPkiDiscoveryConfig = {
@@ -64,12 +44,24 @@ export type TGatewayConnectedPkiDiscoveryConfig = {
   projectName?: string;
 };
 
+export type TGatewayConnectedPamAccount = {
+  id: string;
+  name: string;
+  accountType: string;
+  folderName: string | null;
+};
+
+export type TGatewayConnectedPamAccountTemplate = {
+  id: string;
+  name: string;
+  type: string;
+};
+
 export type TGatewayConnectedResources = {
   appConnections: TGatewayConnectedAppConnection[];
   dynamicSecrets: TGatewayConnectedDynamicSecret[];
-  pamResources: TGatewayConnectedPamResource[];
-  pamDiscoverySources: TGatewayConnectedPamDiscoverySource[];
   kubernetesAuths: TGatewayConnectedKubernetesAuth[];
-  mcpServers: TGatewayConnectedMcpServer[];
   pkiDiscoveryConfigs: TGatewayConnectedPkiDiscoveryConfig[];
+  pamAccounts: TGatewayConnectedPamAccount[];
+  pamAccountTemplates: TGatewayConnectedPamAccountTemplate[];
 };

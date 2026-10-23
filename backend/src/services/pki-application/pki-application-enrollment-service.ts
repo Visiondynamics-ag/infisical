@@ -1,6 +1,7 @@
 import { ForbiddenError } from "@casl/ability";
 
 import { ResourceType } from "@app/db/schemas";
+import { TLicenseServiceFactory } from "@app/ee/services/license/license-service";
 import { TPermissionServiceFactory } from "@app/ee/services/permission/permission-service-types";
 import {
   ResourcePermissionApplicationActions,
@@ -8,11 +9,27 @@ import {
   ResourcePermissionSub
 } from "@app/ee/services/permission/resource-permission";
 import { ScepChallengeType } from "@app/ee/services/pki-scep/challenge";
-import { generateRaCertificate } from "@app/ee/services/pki-scep/pki-scep-fns";
+import {
+  generateAndEncryptScepRaCertificate,
+  resolveCaType,
+  resolveScepRaSigning
+} from "@app/ee/services/pki-scep/pki-scep-fns";
 import { getConfig } from "@app/lib/config/env";
 import { crypto } from "@app/lib/crypto";
 import { BadRequestError, NotFoundError } from "@app/lib/errors";
 import { TProjectPermission } from "@app/lib/types";
+import { AppConnection } from "@app/services/app-connection/app-connection-enums";
+import { TAppConnectionServiceFactory } from "@app/services/app-connection/app-connection-service";
+import { ApprovalPolicyType } from "@app/services/approval-policy/approval-policy-enums";
+import { TApprovalPolicyServiceFactory } from "@app/services/approval-policy/approval-policy-service";
+import { TCertRequestPolicy } from "@app/services/approval-policy/cert-request/cert-request-policy-types";
+import type { TCaKeySourceServiceFactory } from "@app/services/certificate-authority/ca-key-source/ca-key-source-service";
+import { TCertificateAuthorityCertDALFactory } from "@app/services/certificate-authority/certificate-authority-cert-dal";
+import { TCertificateAuthorityDALFactory } from "@app/services/certificate-authority/certificate-authority-dal";
+import { CaType } from "@app/services/certificate-authority/certificate-authority-enums";
+import { CERTIFICATE_AUTHORITIES_TYPE_MAP } from "@app/services/certificate-authority/certificate-authority-maps";
+import { TCertificateAuthoritySecretDALFactory } from "@app/services/certificate-authority/certificate-authority-secret-dal";
+import { TCertificateProfileDALFactory } from "@app/services/certificate-profile/certificate-profile-dal";
 import {
   generateAndEncryptAcmeEabSecret,
   validateAndEncryptPemCaChain
@@ -66,7 +83,11 @@ type TSetScepEnrollmentDTO = {
     allowCertBasedRenewal?: boolean;
     dynamicChallengeExpiryMinutes?: number;
     dynamicChallengeMaxPending?: number;
+    validationConnectionId?: string;
+    signRaWithCa?: boolean;
   };
+  actorRootOrgId: string;
+  actorParentOrgId: string;
 } & TProjectPermission;
 
 type TClearMethodEnrollmentDTO = {
@@ -89,7 +110,18 @@ type TPkiApplicationEnrollmentServiceFactoryDep = {
   estEnrollmentConfigDAL: Pick<TEstEnrollmentConfigDALFactory, "create" | "updateById" | "deleteById" | "findById">;
   acmeEnrollmentConfigDAL: Pick<TAcmeEnrollmentConfigDALFactory, "create" | "updateById" | "deleteById" | "findById">;
   scepEnrollmentConfigDAL: Pick<TScepEnrollmentConfigDALFactory, "create" | "updateById" | "deleteById" | "findById">;
-  kmsService: Pick<TKmsServiceFactory, "generateKmsKey" | "encryptWithKmsKey" | "decryptWithKmsKey">;
+  appConnectionService: Pick<TAppConnectionServiceFactory, "validateAppConnectionUsageById">;
+  licenseService: Pick<TLicenseServiceFactory, "getPlan">;
+  approvalPolicyService: Pick<TApprovalPolicyServiceFactory, "matchPolicy">;
+  certificateProfileDAL: Pick<TCertificateProfileDALFactory, "findById">;
+  certificateAuthorityDAL: Pick<TCertificateAuthorityDALFactory, "findById" | "findByIdWithAssociatedCa">;
+  certificateAuthoritySecretDAL: Pick<TCertificateAuthoritySecretDALFactory, "findOne">;
+  certificateAuthorityCertDAL: Pick<TCertificateAuthorityCertDALFactory, "find">;
+  caKeySourceService: Pick<TCaKeySourceServiceFactory, "buildSigner">;
+  kmsService: Pick<
+    TKmsServiceFactory,
+    "generateKmsKey" | "encryptWithKmsKey" | "decryptWithKmsKey" | "createCipherPairWithDataKey"
+  >;
   projectDAL: Pick<TProjectDALFactory, "findOne" | "updateById" | "transaction">;
   permissionService: Pick<TPermissionServiceFactory, "getResourcePermission">;
 };
@@ -103,6 +135,14 @@ export const pkiApplicationEnrollmentServiceFactory = ({
   estEnrollmentConfigDAL,
   acmeEnrollmentConfigDAL,
   scepEnrollmentConfigDAL,
+  appConnectionService,
+  licenseService,
+  approvalPolicyService,
+  certificateProfileDAL,
+  certificateAuthorityDAL,
+  certificateAuthoritySecretDAL,
+  certificateAuthorityCertDAL,
+  caKeySourceService,
   kmsService,
   projectDAL,
   permissionService
@@ -120,7 +160,7 @@ export const pkiApplicationEnrollmentServiceFactory = ({
       });
     }
 
-    return { junction };
+    return { junction, application };
   };
 
   const $assertEditEnrollment = async (
@@ -132,7 +172,7 @@ export const pkiApplicationEnrollmentServiceFactory = ({
     actorAuthMethod: TProjectPermission["actorAuthMethod"],
     actorOrgId: TProjectPermission["actorOrgId"]
   ) => {
-    const { junction } = await $loadJunction(applicationId, profileId, projectId);
+    const { junction, application } = await $loadJunction(applicationId, profileId, projectId);
     const { permission } = await permissionService.getResourcePermission({
       actor,
       actorId,
@@ -150,7 +190,7 @@ export const pkiApplicationEnrollmentServiceFactory = ({
       ResourcePermissionApplicationEnrollmentActions.Edit,
       ResourcePermissionSub.ApplicationEnrollment
     );
-    return { junction };
+    return { junction, application };
   };
 
   const getEnrollment = async ({
@@ -162,7 +202,7 @@ export const pkiApplicationEnrollmentServiceFactory = ({
     actorAuthMethod,
     actorOrgId
   }: TGetEnrollmentDTO) => {
-    const { junction } = await $loadJunction(applicationId, profileId, projectId);
+    const { junction, application } = await $loadJunction(applicationId, profileId, projectId);
 
     const { permission } = await permissionService.getResourcePermission({
       actor,
@@ -188,11 +228,15 @@ export const pkiApplicationEnrollmentServiceFactory = ({
     const estConfig = junction.estConfigId ? await estEnrollmentConfigDAL.findById(junction.estConfigId) : null;
     const scepConfig = junction.scepConfigId ? await scepEnrollmentConfigDAL.findById(junction.scepConfigId) : null;
 
+    const profile = await certificateProfileDAL.findById(profileId);
+    const caType = await resolveCaType(profile?.caId, certificateAuthorityDAL);
+
     const siteUrl = getConfig().SITE_URL ?? "";
     const appProfilePath = `applications/${applicationId}/profiles/${profileId}`;
 
     return {
       applicationId,
+      applicationName: application.name,
       profileId,
       api: apiConfig
         ? {
@@ -230,9 +274,12 @@ export const pkiApplicationEnrollmentServiceFactory = ({
                 ? `${siteUrl}/scep/${appProfilePath}/challenge`
                 : null,
             raCertificatePem: scepConfig.raCertificate,
-            raCertExpiresAt: scepConfig.raCertExpiresAt
+            raCertExpiresAt: scepConfig.raCertExpiresAt,
+            validationConnectionId: scepConfig.validationConnectionId ?? null,
+            signRaWithCa: Boolean(scepConfig.signRaWithCa)
           }
         : null,
+      caType,
       estConfigured: Boolean(junction.estConfigId),
       acmeConfigured: Boolean(junction.acmeConfigId),
       scepConfigured: Boolean(junction.scepConfigId)
@@ -249,7 +296,7 @@ export const pkiApplicationEnrollmentServiceFactory = ({
     actorAuthMethod,
     actorOrgId
   }: TSetApiEnrollmentDTO) => {
-    const { junction } = await $assertEditEnrollment(
+    const { junction, application } = await $assertEditEnrollment(
       applicationId,
       profileId,
       projectId,
@@ -294,6 +341,7 @@ export const pkiApplicationEnrollmentServiceFactory = ({
       }
       return {
         applicationId,
+        applicationName: application.name,
         profileId,
         api: {
           id: apiConfig.id,
@@ -313,7 +361,7 @@ export const pkiApplicationEnrollmentServiceFactory = ({
     actorAuthMethod,
     actorOrgId
   }: TClearApiEnrollmentDTO) => {
-    const { junction } = await $assertEditEnrollment(
+    const { junction, application } = await $assertEditEnrollment(
       applicationId,
       profileId,
       projectId,
@@ -324,7 +372,7 @@ export const pkiApplicationEnrollmentServiceFactory = ({
     );
 
     if (!junction.apiConfigId) {
-      return { applicationId, profileId };
+      return { applicationId, applicationName: application.name, profileId };
     }
 
     await pkiApplicationProfileDAL.transaction(async (tx) => {
@@ -332,7 +380,7 @@ export const pkiApplicationEnrollmentServiceFactory = ({
       await apiEnrollmentConfigDAL.deleteById(junction.apiConfigId as string, tx);
     });
 
-    return { applicationId, profileId };
+    return { applicationId, applicationName: application.name, profileId };
   };
 
   const setEstEnrollment = async ({
@@ -345,7 +393,7 @@ export const pkiApplicationEnrollmentServiceFactory = ({
     actorAuthMethod,
     actorOrgId
   }: TSetEstEnrollmentDTO) => {
-    const { junction } = await $assertEditEnrollment(
+    const { junction, application } = await $assertEditEnrollment(
       applicationId,
       profileId,
       projectId,
@@ -354,6 +402,15 @@ export const pkiApplicationEnrollmentServiceFactory = ({
       actorAuthMethod,
       actorOrgId
     );
+
+    // Runtime enrollment is already gated in the EST service, so this only moves the refusal to where
+    // an admin can act on it instead of surfacing as a device that silently fails to enroll.
+    const estPlan = await licenseService.getPlan(actorOrgId);
+    if (!estPlan.pkiEst) {
+      throw new BadRequestError({
+        message: "Failed to enable EST enrollment due to plan restriction. Upgrade plan to use EST."
+      });
+    }
 
     if (!config.passphrase || config.passphrase.length < 8) {
       throw new BadRequestError({ message: "EST passphrase must be at least 8 characters." });
@@ -396,6 +453,7 @@ export const pkiApplicationEnrollmentServiceFactory = ({
       }
       return {
         applicationId,
+        applicationName: application.name,
         profileId,
         est: { id: estConfigId, disableBootstrapCaValidation: config.disableBootstrapCaValidation ?? false }
       };
@@ -411,7 +469,7 @@ export const pkiApplicationEnrollmentServiceFactory = ({
     actorAuthMethod,
     actorOrgId
   }: TClearMethodEnrollmentDTO) => {
-    const { junction } = await $assertEditEnrollment(
+    const { junction, application } = await $assertEditEnrollment(
       applicationId,
       profileId,
       projectId,
@@ -420,12 +478,12 @@ export const pkiApplicationEnrollmentServiceFactory = ({
       actorAuthMethod,
       actorOrgId
     );
-    if (!junction.estConfigId) return { applicationId, profileId };
+    if (!junction.estConfigId) return { applicationId, applicationName: application.name, profileId };
     await pkiApplicationProfileDAL.transaction(async (tx) => {
       await pkiApplicationProfileDAL.update({ applicationId, profileId }, { estConfigId: null }, tx);
       await estEnrollmentConfigDAL.deleteById(junction.estConfigId as string, tx);
     });
-    return { applicationId, profileId };
+    return { applicationId, applicationName: application.name, profileId };
   };
 
   const setAcmeEnrollment = async ({
@@ -438,7 +496,7 @@ export const pkiApplicationEnrollmentServiceFactory = ({
     actorAuthMethod,
     actorOrgId
   }: TSetAcmeEnrollmentDTO) => {
-    const { junction } = await $assertEditEnrollment(
+    const { junction, application } = await $assertEditEnrollment(
       applicationId,
       profileId,
       projectId,
@@ -481,6 +539,7 @@ export const pkiApplicationEnrollmentServiceFactory = ({
       }
       return {
         applicationId,
+        applicationName: application.name,
         profileId,
         acme: {
           id: acmeConfigId,
@@ -500,7 +559,7 @@ export const pkiApplicationEnrollmentServiceFactory = ({
     actorAuthMethod,
     actorOrgId
   }: TClearMethodEnrollmentDTO) => {
-    const { junction } = await $assertEditEnrollment(
+    const { junction, application } = await $assertEditEnrollment(
       applicationId,
       profileId,
       projectId,
@@ -509,12 +568,12 @@ export const pkiApplicationEnrollmentServiceFactory = ({
       actorAuthMethod,
       actorOrgId
     );
-    if (!junction.acmeConfigId) return { applicationId, profileId };
+    if (!junction.acmeConfigId) return { applicationId, applicationName: application.name, profileId };
     await pkiApplicationProfileDAL.transaction(async (tx) => {
       await pkiApplicationProfileDAL.update({ applicationId, profileId }, { acmeConfigId: null }, tx);
       await acmeEnrollmentConfigDAL.deleteById(junction.acmeConfigId as string, tx);
     });
-    return { applicationId, profileId };
+    return { applicationId, applicationName: application.name, profileId };
   };
 
   const revealAcmeEabSecret = async ({
@@ -526,7 +585,7 @@ export const pkiApplicationEnrollmentServiceFactory = ({
     actorAuthMethod,
     actorOrgId
   }: TRevealEabSecretDTO) => {
-    const { junction } = await $loadJunction(applicationId, profileId, projectId);
+    const { junction, application } = await $loadJunction(applicationId, profileId, projectId);
     const { permission } = await permissionService.getResourcePermission({
       actor,
       actorId,
@@ -559,6 +618,7 @@ export const pkiApplicationEnrollmentServiceFactory = ({
 
     return {
       applicationId,
+      applicationName: application.name,
       profileId,
       eabKid: acmeConfig.id,
       eabSecret: eabSecret.toString("base64url")
@@ -574,7 +634,7 @@ export const pkiApplicationEnrollmentServiceFactory = ({
     actorAuthMethod,
     actorOrgId
   }: TRevealEabSecretDTO) => {
-    const { junction } = await $loadJunction(applicationId, profileId, projectId);
+    const { junction, application } = await $loadJunction(applicationId, profileId, projectId);
     const { permission } = await permissionService.getResourcePermission({
       actor,
       actorId,
@@ -598,7 +658,7 @@ export const pkiApplicationEnrollmentServiceFactory = ({
     }
     const { encryptedEabSecret } = await generateAndEncryptAcmeEabSecret(projectId, kmsService, projectDAL);
     await acmeEnrollmentConfigDAL.updateById(junction.acmeConfigId, { encryptedEabSecret });
-    return { applicationId, profileId };
+    return { applicationId, applicationName: application.name, profileId };
   };
 
   const setScepEnrollment = async ({
@@ -609,9 +669,11 @@ export const pkiApplicationEnrollmentServiceFactory = ({
     actor,
     actorId,
     actorAuthMethod,
-    actorOrgId
+    actorOrgId,
+    actorRootOrgId,
+    actorParentOrgId
   }: TSetScepEnrollmentDTO) => {
-    const { junction } = await $assertEditEnrollment(
+    const { junction, application } = await $assertEditEnrollment(
       applicationId,
       profileId,
       projectId,
@@ -621,8 +683,50 @@ export const pkiApplicationEnrollmentServiceFactory = ({
       actorOrgId
     );
 
+    const scepPlan = await licenseService.getPlan(actorOrgId);
+    if (!scepPlan.pkiScep) {
+      throw new BadRequestError({
+        message: "Failed to enable SCEP enrollment due to plan restriction. Upgrade plan to use SCEP."
+      });
+    }
+
     const challengeType = config.challengeType ?? ScepChallengeType.STATIC;
+    const isIntune = challengeType === ScepChallengeType.MICROSOFT_INTUNE;
     const appCfg = getConfig();
+
+    // Cert-based renewal skips the challenge, which would bypass Intune's per-request validation.
+    if (isIntune && config.allowCertBasedRenewal === true) {
+      throw new BadRequestError({
+        message:
+          "Certificate-based renewal cannot be enabled with Microsoft Intune validation, because renewals would skip Intune's per-request validation."
+      });
+    }
+    const allowCertBasedRenewal = isIntune ? false : (config.allowCertBasedRenewal ?? true);
+
+    let validationConnectionId: string | null = null;
+    let validationConnectionName: string | null = null;
+    if (isIntune) {
+      if (!config.validationConnectionId) {
+        throw new BadRequestError({
+          message: "A Microsoft Intune connection is required for Microsoft Intune SCEP validation."
+        });
+      }
+      const connection = await appConnectionService.validateAppConnectionUsageById(
+        AppConnection.MicrosoftIntune,
+        { connectionId: config.validationConnectionId, projectId },
+        {
+          id: actorId,
+          type: actor,
+          orgId: actorOrgId,
+          authMethod: actorAuthMethod,
+          rootOrgId: actorRootOrgId,
+          parentOrgId: actorParentOrgId
+        }
+      );
+      validationConnectionId = connection.id;
+      validationConnectionName = connection.name;
+    }
+
     let hashedChallengePassword: string | null = null;
     if (challengeType === ScepChallengeType.STATIC) {
       if (!config.challengePassword) {
@@ -632,13 +736,77 @@ export const pkiApplicationEnrollmentServiceFactory = ({
     }
 
     const isFirstCreate = !junction.scepConfigId;
-    const raCert = isFirstCreate ? await generateRaCertificate(`app-${applicationId}-${profileId}`) : null;
-    let encryptedRaPrivateKey: Buffer | null = null;
-    if (raCert) {
-      const certificateManagerKmsId = await getProjectKmsCertificateKeyId({ projectId, projectDAL, kmsService });
-      const kmsEncryptor = await kmsService.encryptWithKmsKey({ kmsId: certificateManagerKmsId });
-      const encResult = await kmsEncryptor({ plainText: Buffer.from(raCert.privateKeyDer) });
-      encryptedRaPrivateKey = encResult.cipherTextBlob;
+    const raSlug = `app-${applicationId}-${profileId}`;
+
+    const profile = await certificateProfileDAL.findById(profileId);
+    const caType = await resolveCaType(profile?.caId, certificateAuthorityDAL);
+
+    // External CAs always issue asynchronously and Intune has no pending state, so every enrollment
+    // would be reported to Intune as a failure.
+    if (isIntune && caType !== CaType.INTERNAL) {
+      throw new BadRequestError({
+        message: `Microsoft Intune validation requires an internal certificate authority. This profile uses ${CERTIFICATE_AUTHORITIES_TYPE_MAP[caType]}, which issues asynchronously and cannot complete within a SCEP request.`
+      });
+    }
+
+    if (isIntune && profile) {
+      const matchedApprovalPolicy = (await approvalPolicyService.matchPolicy(
+        ApprovalPolicyType.CertRequest,
+        projectId,
+        {
+          profileName: profile.slug,
+          applicationId
+        }
+      )) as TCertRequestPolicy | null;
+
+      if (matchedApprovalPolicy) {
+        throw new BadRequestError({
+          message: `Microsoft Intune validation cannot be used on this profile because the certificate request approval policy '${matchedApprovalPolicy.name}' applies to it. Requests that require approval cannot complete within a SCEP request. Remove this profile from the policy, or use a static or dynamic SCEP challenge instead.`
+        });
+      }
+    }
+
+    const { signRaWithCa } = await resolveScepRaSigning({
+      caId: profile?.caId,
+      requestedSignRaWithCa: config.signRaWithCa,
+      certificateAuthorityDAL
+    });
+
+    const existingScepConfig = junction.scepConfigId
+      ? await scepEnrollmentConfigDAL.findById(junction.scepConfigId)
+      : null;
+
+    if (isIntune && !signRaWithCa) {
+      throw new BadRequestError({
+        message:
+          "Microsoft Intune validation requires the RA certificate to be signed with the CA. Enable 'Sign RA certificate with the CA' on this SCEP enrollment."
+      });
+    }
+
+    // Changing this regenerates the RA certificate, which breaks devices already trusting the current one.
+    if (existingScepConfig && existingScepConfig.signRaWithCa !== signRaWithCa) {
+      throw new BadRequestError({
+        message:
+          "Signing the RA certificate with the CA cannot be changed for an existing SCEP enrollment. Disable SCEP enrollment and set it up again to change it."
+      });
+    }
+
+    let raCert: Awaited<ReturnType<typeof generateAndEncryptScepRaCertificate>> | null = null;
+    if (isFirstCreate) {
+      raCert = await generateAndEncryptScepRaCertificate({
+        slug: raSlug,
+        caId: profile?.caId,
+        signRaWithCa,
+        projectId,
+        deps: {
+          certificateAuthorityDAL,
+          certificateAuthoritySecretDAL,
+          certificateAuthorityCertDAL,
+          projectDAL,
+          kmsService,
+          caKeySourceService
+        }
+      });
     }
 
     return pkiApplicationProfileDAL.transaction(async (tx) => {
@@ -653,30 +821,41 @@ export const pkiApplicationEnrollmentServiceFactory = ({
           scepConfigId,
           {
             ...(hashedChallengePassword !== null ? { hashedChallengePassword } : {}),
+            ...(raCert
+              ? {
+                  raCertificate: raCert.certificatePem,
+                  raCertExpiresAt: raCert.expiresAt,
+                  encryptedRaPrivateKey: raCert.encryptedPrivateKey
+                }
+              : {}),
             challengeType,
             includeCaCertInResponse: config.includeCaCertInResponse ?? true,
-            allowCertBasedRenewal: config.allowCertBasedRenewal ?? true,
+            allowCertBasedRenewal,
+            signRaWithCa,
             dynamicChallengeExpiryMinutes,
-            dynamicChallengeMaxPending
+            dynamicChallengeMaxPending,
+            validationConnectionId
           },
           tx
         );
       } else {
-        if (!raCert || !encryptedRaPrivateKey) {
+        if (!raCert) {
           // Defensive, should never hit; raCert is generated when isFirstCreate.
           throw new BadRequestError({ message: "Failed to generate SCEP RA certificate." });
         }
         const created = await scepEnrollmentConfigDAL.create(
           {
-            encryptedRaPrivateKey,
+            encryptedRaPrivateKey: raCert.encryptedPrivateKey,
             raCertificate: raCert.certificatePem,
             raCertExpiresAt: raCert.expiresAt,
             hashedChallengePassword,
             challengeType,
             includeCaCertInResponse: config.includeCaCertInResponse ?? true,
-            allowCertBasedRenewal: config.allowCertBasedRenewal ?? true,
+            allowCertBasedRenewal,
+            signRaWithCa,
             dynamicChallengeExpiryMinutes,
             dynamicChallengeMaxPending,
+            validationConnectionId,
             applicationProfileId: junction.id
           },
           tx
@@ -684,7 +863,16 @@ export const pkiApplicationEnrollmentServiceFactory = ({
         scepConfigId = created.id;
         await pkiApplicationProfileDAL.update({ applicationId, profileId }, { scepConfigId }, tx);
       }
-      return { applicationId, profileId, scep: { id: scepConfigId, challengeType } };
+      return {
+        applicationId,
+        applicationName: application.name,
+        profileId,
+        scep: { id: scepConfigId, challengeType },
+        signRaWithCa,
+        validationConnection: validationConnectionId
+          ? { id: validationConnectionId, name: validationConnectionName }
+          : null
+      };
     });
   };
 
@@ -697,7 +885,7 @@ export const pkiApplicationEnrollmentServiceFactory = ({
     actorAuthMethod,
     actorOrgId
   }: TClearMethodEnrollmentDTO) => {
-    const { junction } = await $assertEditEnrollment(
+    const { junction, application } = await $assertEditEnrollment(
       applicationId,
       profileId,
       projectId,
@@ -706,12 +894,12 @@ export const pkiApplicationEnrollmentServiceFactory = ({
       actorAuthMethod,
       actorOrgId
     );
-    if (!junction.scepConfigId) return { applicationId, profileId };
+    if (!junction.scepConfigId) return { applicationId, applicationName: application.name, profileId };
     await pkiApplicationProfileDAL.transaction(async (tx) => {
       await pkiApplicationProfileDAL.update({ applicationId, profileId }, { scepConfigId: null }, tx);
       await scepEnrollmentConfigDAL.deleteById(junction.scepConfigId as string, tx);
     });
-    return { applicationId, profileId };
+    return { applicationId, applicationName: application.name, profileId };
   };
 
   return {

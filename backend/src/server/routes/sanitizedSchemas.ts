@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   CertificateAuthoritiesSchema,
+  DynamicSecretLeasesSchema,
   DynamicSecretsSchema,
   HoneyTokensSchema,
   IdentityProjectAdditionalPrivilegeSchema,
@@ -16,6 +17,10 @@ import {
   UsersSchema
 } from "@app/db/schemas";
 import { ProjectPermissionActions, ProjectPermissionSub } from "@app/ee/services/permission/project-permission";
+import {
+  SanitizedProxiedServiceBaseSchema,
+  SanitizedProxiedServiceCredentialSchema
+} from "@app/ee/services/proxied-service/proxied-service-schemas";
 import { ResourceMetadataNonEncryptionSchema } from "@app/services/resource-metadata/resource-metadata-schema";
 
 import { UnpackedPermissionSchema } from "./sanitizedSchema/permission";
@@ -128,12 +133,23 @@ export const sanitizedServiceTokenUserSchema = UsersSchema.pick({
   devices: true,
   email: true,
   firstName: true,
-  lastName: true,
-  mfaMethods: true
+  lastName: true
 }).merge(
   z.object({
     __v: z.number().default(0),
-    _id: z.string()
+    _id: z.string(),
+    mfaMethods: z
+      .string()
+      .array()
+      .nullable()
+      .optional()
+      .default(null)
+      .describe(
+        JSON.stringify({
+          deprecated: true,
+          description: "Deprecated: no longer used and always null. Use selectedMfaMethod instead."
+        })
+      )
   })
 );
 
@@ -267,6 +283,10 @@ export const SanitizedDynamicSecretSchema = DynamicSecretsSchema.omit({
   metadata: ResourceMetadataNonEncryptionSchema.optional()
 });
 
+export const SanitizedDynamicSecretLeaseSchema = DynamicSecretLeasesSchema.omit({
+  encryptedLeaseData: true
+});
+
 export const SanitizedHoneyTokenSchema = HoneyTokensSchema.pick({
   id: true,
   name: true,
@@ -289,6 +309,18 @@ export const SanitizedHoneyTokenSchema = HoneyTokensSchema.pick({
   })
 });
 
+export const SanitizedProxiedServiceSchema = SanitizedProxiedServiceBaseSchema.extend({
+  environment: z.object({
+    id: z.string(),
+    name: z.string(),
+    slug: z.string()
+  }),
+  folder: z.object({
+    path: z.string()
+  }),
+  credentials: SanitizedProxiedServiceCredentialSchema.array()
+});
+
 export const SanitizedProjectSchema = ProjectsSchema.pick({
   id: true,
   name: true,
@@ -304,12 +336,15 @@ export const SanitizedProjectSchema = ProjectsSchema.pick({
   upgradeStatus: true,
   pitVersionLimit: true,
   kmsCertificateKeyId: true,
+  kmsSecretManagerKeyId: true,
   auditLogsRetentionDays: true,
   hasDeleteProtection: true,
   secretSharing: true,
   showSnapshotsLegacy: true,
   secretDetectionIgnoreValues: true,
-  enforceEncryptedSecretManagerSecretMetadata: true
+  enforceEncryptedSecretManagerSecretMetadata: true,
+  secretBlindIndexEnabled: true,
+  isLegacyAdditionalPrivilegesEnabled: true
 });
 
 export const SanitizedTagSchema = SecretTagsSchema.pick({

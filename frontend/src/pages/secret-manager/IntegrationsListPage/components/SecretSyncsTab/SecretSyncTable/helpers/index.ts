@@ -53,8 +53,14 @@ export const getSecretSyncDestinationColValues = (secretSync: TSecretSync) => {
       break;
     case SecretSync.GCPSecretManager:
       primaryText = destinationConfig.projectId;
-      secondaryText =
-        destinationConfig.scope === GcpSyncScope.Global ? "Global" : destinationConfig.locationId;
+      if (destinationConfig.scope === GcpSyncScope.Global) {
+        const regions = destinationConfig.userReplicaLocationIds?.length
+          ? destinationConfig.userReplicaLocationIds.join(", ")
+          : destinationConfig.locationId;
+        secondaryText = regions ? `Global - ${regions}` : "Global";
+      } else {
+        secondaryText = destinationConfig.locationId;
+      }
       break;
     case SecretSync.AzureKeyVault:
       primaryText = destinationConfig.vaultBaseUrl;
@@ -172,6 +178,10 @@ export const getSecretSyncDestinationColValues = (secretSync: TSecretSync) => {
       primaryText = destinationConfig.scriptId;
       secondaryText = "Script ID";
       break;
+    case SecretSync.CloudflareSecretsStore:
+      primaryText = destinationConfig.storeName || destinationConfig.storeId;
+      secondaryText = "Secrets Store";
+      break;
     case SecretSync.Zabbix:
       if (destinationConfig.scope === ZabbixSyncScope.Host) {
         primaryText = destinationConfig.hostName;
@@ -187,6 +197,10 @@ export const getSecretSyncDestinationColValues = (secretSync: TSecretSync) => {
       primaryText = destinationConfig.projectName;
       secondaryText = "Railway Project";
       break;
+    case SecretSync.HasuraCloud:
+      primaryText = destinationConfig.projectName || destinationConfig.projectId;
+      secondaryText = "Hasura Cloud Project";
+      break;
     case SecretSync.Checkly:
       primaryText = destinationConfig.accountName || destinationConfig.accountId;
       secondaryText = destinationConfig.groupName || destinationConfig.groupId || "Checkly Account";
@@ -194,6 +208,14 @@ export const getSecretSyncDestinationColValues = (secretSync: TSecretSync) => {
     case SecretSync.Supabase:
       primaryText = destinationConfig.projectName;
       secondaryText = "Supabase Project";
+      break;
+    case SecretSync.Rundeck:
+      primaryText = destinationConfig.project;
+      secondaryText = destinationConfig.path;
+      break;
+    case SecretSync.Portainer:
+      primaryText = `Stack #${destinationConfig.stackId}`;
+      secondaryText = `Environment #${destinationConfig.environmentId}`;
       break;
     case SecretSync.DigitalOceanAppPlatform:
       primaryText = destinationConfig.appName;
@@ -274,6 +296,21 @@ export const getSecretSyncDestinationColValues = (secretSync: TSecretSync) => {
     case SecretSync.Cloud66:
       primaryText = destinationConfig.stackName;
       secondaryText = "Stack";
+      break;
+    case SecretSync.Daytona:
+      primaryText = secretSync.connection.name;
+      secondaryText = "Daytona Organization";
+      break;
+    case SecretSync.Keeper:
+      primaryText = destinationConfig.folderName || destinationConfig.folderUid;
+      secondaryText = "Shared Folder";
+      break;
+    case SecretSync.Spacelift:
+      primaryText = destinationConfig.contextName;
+      secondaryText =
+        destinationConfig.configType === "environment-variable"
+          ? "environment variables"
+          : "file mount";
       break;
     default:
       throw new Error(`Unhandled Destination Col Values ${destination}`);

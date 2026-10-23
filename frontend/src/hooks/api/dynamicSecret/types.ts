@@ -44,7 +44,66 @@ export enum DynamicSecretProviders {
   Clickhouse = "clickhouse",
   Milvus = "milvus",
   Ssh = "ssh",
-  IbmApiConnect = "ibm-api-connect"
+  IbmApiConnect = "ibm-api-connect",
+  Tailscale = "tailscale",
+  OAuth2 = "oauth2",
+  Kafka = "kafka"
+}
+
+export enum KafkaSaslMechanism {
+  Plain = "PLAIN",
+  ScramSha256 = "SCRAM-SHA-256",
+  ScramSha512 = "SCRAM-SHA-512"
+}
+
+export enum KafkaAclResourceType {
+  Topic = "TOPIC",
+  Group = "GROUP",
+  Cluster = "CLUSTER",
+  TransactionalId = "TRANSACTIONAL_ID"
+}
+
+export enum KafkaAclPatternType {
+  Literal = "LITERAL",
+  Prefixed = "PREFIXED"
+}
+
+export enum KafkaAclOperation {
+  All = "ALL",
+  Read = "READ",
+  Write = "WRITE",
+  Create = "CREATE",
+  Delete = "DELETE",
+  Alter = "ALTER",
+  Describe = "DESCRIBE",
+  DescribeConfigs = "DESCRIBE_CONFIGS",
+  AlterConfigs = "ALTER_CONFIGS",
+  IdempotentWrite = "IDEMPOTENT_WRITE"
+}
+
+export enum KafkaAclPermissionType {
+  Allow = "ALLOW",
+  Deny = "DENY"
+}
+
+export enum OAuth2GrantType {
+  ClientCredentials = "client-credentials"
+}
+
+export enum OAuth2ClientAuthMethod {
+  ClientSecretBasic = "client_secret_basic",
+  ClientSecretPost = "client_secret_post"
+}
+
+export enum TailscaleKeyAuthType {
+  AuthKeys = "auth_keys",
+  OAuthKeys = "oauth_keys",
+  FederatedKeys = "federated_keys"
+}
+
+export enum TailscaleAuthMethod {
+  ApiKey = "api_key",
+  OAuth = "oauth"
 }
 
 export enum KubernetesDynamicSecretCredentialType {
@@ -139,6 +198,8 @@ export type TDynamicSecretProvider =
             policyDocument?: string;
             userGroups?: string;
             policyArns?: string;
+            sessionPolicyArns?: string;
+            sessionPolicyDocument?: string;
           }
         | {
             method: DynamicSecretAwsIamAuth.IRSA;
@@ -508,6 +569,7 @@ export type TDynamicSecretProvider =
         caPublicKey?: string;
         principals: string[];
         keyAlgorithm: string;
+        caKeyAlgorithm?: string;
       };
     }
   | {
@@ -522,6 +584,78 @@ export type TDynamicSecretProvider =
         appId: string;
         gatewayId?: string;
         gatewayPoolId?: string;
+      };
+    }
+  | {
+      type: DynamicSecretProviders.Tailscale;
+      inputs:
+        | {
+            authType: TailscaleKeyAuthType.AuthKeys;
+            auth:
+              | { method: TailscaleAuthMethod.ApiKey; apiKey: string }
+              | { method: TailscaleAuthMethod.OAuth; clientId: string; clientSecret: string };
+            tailnet: string;
+            description?: string;
+            tags: string[];
+            reusable: boolean;
+            preauthorized: boolean;
+          }
+        | {
+            authType: TailscaleKeyAuthType.OAuthKeys;
+            auth:
+              | { method: TailscaleAuthMethod.ApiKey; apiKey: string }
+              | { method: TailscaleAuthMethod.OAuth; clientId: string; clientSecret: string };
+            tailnet: string;
+            description?: string;
+            tags: string[];
+            scopes: string[];
+          }
+        | {
+            authType: TailscaleKeyAuthType.FederatedKeys;
+            auth:
+              | { method: TailscaleAuthMethod.ApiKey; apiKey: string }
+              | { method: TailscaleAuthMethod.OAuth; clientId: string; clientSecret: string };
+            tailnet: string;
+            description?: string;
+            tags: string[];
+            scopes: string[];
+            issuer: string;
+            subject: string;
+            audience?: string;
+          };
+    }
+  | {
+      type: DynamicSecretProviders.OAuth2;
+      inputs: {
+        grantType: OAuth2GrantType.ClientCredentials;
+        tokenUrl: string;
+        revocationUrl: string;
+        clientId: string;
+        clientAuth: {
+          method: OAuth2ClientAuthMethod;
+          clientSecret?: string;
+        };
+        scope?: string;
+        extraParams: { key: string; value: string }[];
+      };
+    }
+  | {
+      type: DynamicSecretProviders.Kafka;
+      inputs: {
+        bootstrapServers: { host: string; port: number }[];
+        saslMechanism: KafkaSaslMechanism;
+        username: string;
+        password: string;
+        acls: {
+          resourceType: KafkaAclResourceType;
+          patternType: KafkaAclPatternType;
+          resourceName: string;
+          operation: KafkaAclOperation;
+          permissionType: KafkaAclPermissionType;
+        }[];
+        sslEnabled?: boolean;
+        ca?: string;
+        sslRejectUnauthorized?: boolean;
       };
     };
 
@@ -579,4 +713,27 @@ export type TGetDynamicSecretsByEnvsDTO = {
   projectSlug: string;
   path: string;
   environmentSlugs: string[];
+};
+
+export type TGetEntraIdUsersDTO = {
+  projectSlug: string;
+  tenantId: string;
+  applicationId: string;
+  clientSecret: string;
+};
+
+export type TGetIbmApiConnectOrgsDTO = {
+  projectSlug: string;
+  instanceUrl: string;
+  apiKey: string;
+  clientId: string;
+  clientSecret: string;
+};
+
+export type TGetIbmApiConnectOrgCatalogsDTO = TGetIbmApiConnectOrgsDTO & {
+  orgId: string;
+};
+
+export type TGetIbmApiConnectOrgAppsDTO = TGetIbmApiConnectOrgCatalogsDTO & {
+  catalogId: string;
 };

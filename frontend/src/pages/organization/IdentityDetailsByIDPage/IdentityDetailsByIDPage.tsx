@@ -3,10 +3,8 @@ import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { ChevronLeftIcon, EllipsisIcon } from "lucide-react";
 
-import { UpgradePlanModal } from "@app/components/license/UpgradePlanModal";
 import { createNotification } from "@app/components/notifications";
 import { OrgPermissionCan } from "@app/components/permissions";
-import { DeleteActionModal, PageHeader } from "@app/components/v2";
 import {
   Alert,
   AlertDescription,
@@ -17,6 +15,7 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  ConfirmationAlertDialog,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -28,6 +27,7 @@ import {
   DropdownMenuTrigger,
   OrgIcon
 } from "@app/components/v3";
+import { PageHeader } from "@app/components/v3/platform";
 import { ROUTE_PATHS } from "@app/const/routes";
 import {
   OrgPermissionActions,
@@ -42,6 +42,7 @@ import { OrgAccessControlTabSections } from "@app/types/org";
 import { IdentityAuthMethodModal } from "../AccessManagementPage/components/OrgIdentityTab/components/IdentitySection/IdentityAuthMethodModal";
 import { OrgIdentityModal } from "../AccessManagementPage/components/OrgIdentityTab/components/IdentitySection/OrgIdentityModal";
 import {
+  IdentityAlertAction,
   IdentityAuthenticationSection,
   IdentityDetailsSection,
   IdentityProjectsSection
@@ -91,7 +92,7 @@ const Page = () => {
   const isScopeIdentity = data?.identity.orgId === currentOrg.id;
 
   return (
-    <div className="mx-auto flex max-w-8xl flex-col">
+    <div className="@container mx-auto flex max-w-8xl flex-col">
       {data && (
         <>
           <Link
@@ -100,7 +101,7 @@ const Page = () => {
             search={{
               selectedTab: OrgAccessControlTabSections.Identities
             }}
-            className="mb-4 flex w-fit items-center gap-x-1 text-sm text-mineshaft-400 transition duration-100 hover:text-mineshaft-400/80"
+            className="mb-4 flex w-fit items-center gap-x-1 text-sm text-muted transition duration-100 hover:text-muted/80"
           >
             <ChevronLeftIcon size={16} />
             {isSubOrganization ? "Sub-" : ""}Organization Machine Identities
@@ -110,6 +111,9 @@ const Page = () => {
             description={`Configure and manage${isScopeIdentity ? " machine identity and " : " "}${isSubOrganization ? "sub-" : ""}organization access control`}
             title={data.identity.name}
           >
+            {isScopeIdentity && !data.identity.projectId && (
+              <IdentityAlertAction identityId={identityId} />
+            )}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="outline">
@@ -151,13 +155,13 @@ const Page = () => {
               </DropdownMenuContent>
             </DropdownMenu>
           </PageHeader>
-          <div className="flex flex-col gap-5 lg:flex-row">
+          <div className="flex flex-col gap-5 @4xl:flex-row">
             <IdentityDetailsSection
               isCurrentOrgIdentity={data.identity.orgId === currentOrg.id}
               identityId={identityId}
               handlePopUpOpen={handlePopUpOpen}
             />
-            <div className="flex flex-1 flex-col gap-y-5">
+            <div className="flex min-w-0 flex-1 flex-col gap-y-5">
               {isAuthHidden ? (
                 <Card>
                   <CardHeader>
@@ -217,7 +221,7 @@ const Page = () => {
         open={popUp?.identity?.isOpen}
         onOpenChange={(isOpen) => handlePopUpToggle("identity", isOpen)}
       >
-        <DialogContent className="max-w-xl overflow-visible">
+        <DialogContent className="max-w-xl">
           <DialogHeader>
             <DialogTitle>
               {`${popUp?.identity?.data ? "Update" : "Create"} Machine Identity`}
@@ -236,20 +240,15 @@ const Page = () => {
         handlePopUpOpen={handlePopUpOpen}
         handlePopUpToggle={handlePopUpToggle}
       />
-      <UpgradePlanModal
-        isOpen={popUp.upgradePlan.isOpen}
-        onOpenChange={(isOpen) => handlePopUpToggle("upgradePlan", isOpen)}
-        text={`Your current plan does not include access to ${popUp.upgradePlan.data?.featureName}. To unlock this feature, please upgrade to Infisical ${popUp.upgradePlan.data?.isEnterpriseFeature ? "Enterprise" : "Pro"} plan.`}
-        isEnterpriseFeature={popUp.upgradePlan.data?.isEnterpriseFeature}
-      />
-      <DeleteActionModal
+      <ConfirmationAlertDialog
         isOpen={popUp.deleteIdentity.isOpen}
         title={`Are you sure you want to delete ${
           (popUp?.deleteIdentity?.data as { name: string })?.name || ""
         }?`}
-        onChange={(isOpen) => handlePopUpToggle("deleteIdentity", isOpen)}
-        deleteKey="confirm"
-        onDeleteApproved={() =>
+        description="This action is irreversible."
+        onOpenChange={(isOpen) => handlePopUpToggle("deleteIdentity", isOpen)}
+        confirmKey="confirm"
+        onConfirm={() =>
           onDeleteIdentitySubmit(
             (popUp?.deleteIdentity?.data as { identityId: string })?.identityId
           )

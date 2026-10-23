@@ -17,8 +17,10 @@ import {
   OrgPermissionIdentityActions,
   OrgPermissionKmipActions,
   OrgPermissionMachineIdentityAuthTemplateActions,
+  OrgPermissionMemberActions,
   OrgPermissionProjectActions,
   OrgPermissionSecretShareAction,
+  OrgPermissionSecretsManagementInsightsActions,
   OrgPermissionSsoActions,
   OrgPermissionSubOrgActions,
   OrgRelayPermissionActions
@@ -37,7 +39,12 @@ const generalPermissionSchema = z
   .optional();
 
 const auditLogsPermissionSchema = z
-  .array(z.object({ [OrgPermissionAuditLogsActions.Read]: z.boolean().optional() }))
+  .array(
+    z.object({
+      [OrgPermissionAuditLogsActions.Read]: z.boolean().optional(),
+      [OrgPermissionAuditLogsActions.Edit]: z.boolean().optional()
+    })
+  )
   .optional();
 
 const billingPermissionSchema = z
@@ -77,6 +84,18 @@ const kmipPermissionSchema = z
   .array(z.object({ [OrgPermissionKmipActions.Proxy]: z.boolean().optional() }))
   .optional();
 
+const memberPermissionSchema = z
+  .array(
+    z.object({
+      [OrgPermissionMemberActions.Read]: z.boolean().optional(),
+      [OrgPermissionMemberActions.Create]: z.boolean().optional(),
+      [OrgPermissionMemberActions.Edit]: z.boolean().optional(),
+      [OrgPermissionMemberActions.Delete]: z.boolean().optional(),
+      [OrgPermissionMemberActions.GrantPrivileges]: z.boolean().optional()
+    })
+  )
+  .optional();
+
 const identityPermissionSchema = z
   .array(
     z.object({
@@ -86,6 +105,7 @@ const identityPermissionSchema = z
       [OrgPermissionIdentityActions.Create]: z.boolean().optional(),
       [OrgPermissionIdentityActions.GrantPrivileges]: z.boolean().optional(),
       [OrgPermissionIdentityActions.RevokeAuth]: z.boolean().optional(),
+      [OrgPermissionIdentityActions.EditAuth]: z.boolean().optional(),
       [OrgPermissionIdentityActions.CreateToken]: z.boolean().optional(),
       [OrgPermissionIdentityActions.GetToken]: z.boolean().optional(),
       [OrgPermissionIdentityActions.DeleteToken]: z.boolean().optional()
@@ -193,6 +213,17 @@ const honeyTokenPermissionSchema = z
   .array(z.object({ [OrgPermissionHoneyTokenActions.Setup]: z.boolean().optional() }))
   .optional();
 
+const secretsManagementInsightsPermissionSchema = z
+  .array(
+    z.object({
+      [OrgPermissionSecretsManagementInsightsActions.Read]: z.boolean().optional(),
+      [OrgPermissionSecretsManagementInsightsActions.GenerateReport]: z.boolean().optional(),
+      [OrgPermissionSecretsManagementInsightsActions.DeleteReport]: z.boolean().optional(),
+      [OrgPermissionSecretsManagementInsightsActions.SearchAllSecretValues]: z.boolean().optional()
+    })
+  )
+  .optional();
+
 const projectPermissionSchema = z
   .array(
     z.object({
@@ -216,7 +247,7 @@ const ssoPermissionSchema = z
 
 export const formSchema = z.object({
   name: z.string().trim(),
-  description: z.string().trim().optional(),
+  description: z.string().trim().nullish(),
   slug: z
     .string()
     .trim()
@@ -225,7 +256,7 @@ export const formSchema = z.object({
     .object({
       project: projectPermissionSchema,
       "audit-logs": auditLogsPermissionSchema,
-      member: generalPermissionSchema,
+      member: memberPermissionSchema,
       groups: groupPermissionSchema,
       role: generalPermissionSchema,
       settings: generalPermissionSchema,
@@ -252,7 +283,8 @@ export const formSchema = z.object({
       "secret-share": secretSharingPermissionSchema,
       "sub-organization": subOrganizationPermissionSchema,
       "email-domains": emailDomainPermissionSchema,
-      "honey-tokens": honeyTokenPermissionSchema
+      "honey-tokens": honeyTokenPermissionSchema,
+      [OrgPermissionSubjects.SecretsManagementInsights]: secretsManagementInsightsPermissionSchema
     })
     .optional()
     .superRefine((permissions, ctx) => {
@@ -314,24 +346,29 @@ export const ORG_PERMISSION_OBJECT: Record<string, TOrgPermissionConfig> = {
     description: "Manage organization member access and role assignments",
     actions: [
       {
-        value: OrgPermissionActions.Read,
+        value: OrgPermissionMemberActions.Read,
         label: "View all members",
         description: "View organization members and their roles"
       },
       {
-        value: OrgPermissionActions.Create,
+        value: OrgPermissionMemberActions.Create,
         label: "Invite members",
         description: "Invite new users to join the organization"
       },
       {
-        value: OrgPermissionActions.Edit,
+        value: OrgPermissionMemberActions.Edit,
         label: "Edit members",
-        description: "Modify member roles and access settings"
+        description: "Update member attributes and activation status"
       },
       {
-        value: OrgPermissionActions.Delete,
+        value: OrgPermissionMemberActions.Delete,
         label: "Remove members",
         description: "Remove members from the organization"
+      },
+      {
+        value: OrgPermissionMemberActions.GrantPrivileges,
+        label: "Grant privileges",
+        description: "Assign and change the roles held by organization members"
       }
     ]
   },
@@ -532,7 +569,7 @@ export const ORG_PERMISSION_OBJECT: Record<string, TOrgPermissionConfig> = {
     ]
   },
   [OrgPermissionSubjects.ProjectTemplates]: {
-    title: "Project Templates",
+    title: "Secrets Management Project Templates",
     description: "Manage reusable templates applied when creating new projects",
     actions: [
       {
@@ -586,12 +623,17 @@ export const ORG_PERMISSION_OBJECT: Record<string, TOrgPermissionConfig> = {
   },
   [OrgPermissionSubjects.AuditLogs]: {
     title: "Audit Logs",
-    description: "View organization activity and audit trail",
+    description: "View organization activity and audit trail, and choose which events are recorded",
     actions: [
       {
         value: OrgPermissionAuditLogsActions.Read,
         label: "Read",
         description: "View organization activity and audit events"
+      },
+      {
+        value: OrgPermissionAuditLogsActions.Edit,
+        label: "Edit",
+        description: "Choose which audit log event classes the organization records"
       }
     ]
   },
@@ -619,11 +661,20 @@ export const ORG_PERMISSION_OBJECT: Record<string, TOrgPermissionConfig> = {
         label: "Delete Identities",
         description: "Delete machine identities"
       },
-      { value: OrgPermissionIdentityActions.GrantPrivileges, label: "Grant Privileges" },
+      {
+        value: OrgPermissionIdentityActions.GrantPrivileges,
+        label: "Grant Privileges",
+        description: "Assign roles and additional privileges to machine identities"
+      },
       {
         value: OrgPermissionIdentityActions.RevokeAuth,
         label: "Revoke Auth",
         description: "Revoke authentication for a machine identity"
+      },
+      {
+        value: OrgPermissionIdentityActions.EditAuth,
+        label: "Configure Auth",
+        description: "Add or update authentication methods for a machine identity"
       },
       {
         value: OrgPermissionIdentityActions.CreateToken,
@@ -666,7 +717,11 @@ export const ORG_PERMISSION_OBJECT: Record<string, TOrgPermissionConfig> = {
         label: "Delete Groups",
         description: "Delete groups"
       },
-      { value: OrgPermissionGroupActions.GrantPrivileges, label: "Grant Privileges" },
+      {
+        value: OrgPermissionGroupActions.GrantPrivileges,
+        label: "Grant Privileges",
+        description: "Assign roles and additional privileges to groups"
+      },
       {
         value: OrgPermissionGroupActions.AddMembers,
         label: "Add Members",
@@ -717,7 +772,7 @@ export const ORG_PERMISSION_OBJECT: Record<string, TOrgPermissionConfig> = {
   },
   [OrgPermissionSubjects.Gateway]: {
     title: "Gateways",
-    description: "Manage gateways used for private network access",
+    description: "Manage gateways that securely connect Infisical to your infrastructure",
     actions: [
       {
         value: OrgGatewayPermissionActions.ListGateways,
@@ -727,7 +782,8 @@ export const ORG_PERMISSION_OBJECT: Record<string, TOrgPermissionConfig> = {
       {
         value: OrgGatewayPermissionActions.CreateGateways,
         label: "Create Gateways",
-        description: "Register new gateways for private network access"
+        description:
+          "Register new gateways that securely proxy Infisical traffic into your infrastructure"
       },
       {
         value: OrgGatewayPermissionActions.EditGateways,
@@ -887,7 +943,7 @@ export const ORG_PERMISSION_OBJECT: Record<string, TOrgPermissionConfig> = {
     ]
   },
   [OrgPermissionSubjects.SecretShare]: {
-    title: "Secret Share",
+    title: "Secrets Management Secret Sharing",
     description: "Configure settings for sharing secrets externally",
     actions: [
       {
@@ -897,8 +953,35 @@ export const ORG_PERMISSION_OBJECT: Record<string, TOrgPermissionConfig> = {
       }
     ]
   },
+  [OrgPermissionSubjects.SecretsManagementInsights]: {
+    title: "Secrets Management Insights",
+    description: "View organization-wide secrets management insights and reports",
+    actions: [
+      {
+        value: OrgPermissionSecretsManagementInsightsActions.Read,
+        label: "Read",
+        description: "View secrets management insights"
+      },
+      {
+        value: OrgPermissionSecretsManagementInsightsActions.GenerateReport,
+        label: "Generate Report",
+        description: "Generate new secrets management insight reports"
+      },
+      {
+        value: OrgPermissionSecretsManagementInsightsActions.DeleteReport,
+        label: "Delete Report",
+        description: "Delete secrets management insight reports"
+      },
+      {
+        value: OrgPermissionSecretsManagementInsightsActions.SearchAllSecretValues,
+        label: "Search All Secret Values",
+        description:
+          "Locate secrets that share a value in any project, including projects the user isn't a member of"
+      }
+    ]
+  },
   [OrgPermissionSubjects.HoneyTokens]: {
-    title: "Honey Tokens",
+    title: "Secrets Management Honey Tokens",
     description: "Configure honey token setup for the organization",
     actions: [
       {

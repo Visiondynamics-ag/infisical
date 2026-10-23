@@ -1,8 +1,30 @@
-import http from "node:http";
+import { postGatewayRpc } from "./gateway-rpc";
 
-import { logger } from "@app/lib/logger";
+export type Pkcs11RpcEndpoint =
+  | "/v1/test"
+  | "/v1/generate-key-pair"
+  | "/v1/sign"
+  | "/v1/get-public-key"
+  | "/v1/find-keys";
 
-export type Pkcs11RpcEndpoint = "/v1/test" | "/v1/generate-key-pair" | "/v1/sign" | "/v1/get-public-key";
+export enum Pkcs11ErrorCode {
+  KeyNotFound = "key_not_found",
+  KeyAmbiguous = "key_ambiguous",
+  KeyTypeMismatch = "key_type_mismatch",
+  SignatureMismatch = "signature_mismatch",
+  MechanismInvalid = "mechanism_invalid",
+  BadRequest = "bad_request",
+  Internal = "internal",
+  DriverUnavailable = "driver_unavailable",
+  GatewayTimeout = "gateway_timeout",
+  NotSupported = "pkcs11_not_supported",
+  UnsupportedGatewayVersion = "unsupported_gateway_version",
+  GatewayUnreachable = "gateway_unreachable",
+  GatewayNotFound = "gateway_not_found"
+}
+
+export const isPkcs11Error = (err: unknown, code: Pkcs11ErrorCode) =>
+  err instanceof Error && err.message.includes(`(${code})`);
 
 export type Pkcs11RpcRequestBody = {
   slotLabel: string;
@@ -27,94 +49,69 @@ export const callPkcs11Endpoint = async <T>(args: {
   body: Pkcs11RpcRequestBody;
   timeoutMs?: number;
 }): Promise<Pkcs11RpcResponse<T>> => {
-  const payload = JSON.stringify(args.body);
-  return new Promise<Pkcs11RpcResponse<T>>((resolve, reject) => {
-    const req = http.request(
-      {
-        host: "127.0.0.1",
-        port: args.port,
-        path: args.endpoint,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(payload).toString(),
-          Connection: "close"
-        },
-        timeout: args.timeoutMs ?? PKCS11_RPC_TIMEOUT_MS
-      },
-      (res) => {
-        const chunks: Buffer[] = [];
-        res.on("data", (chunk: Buffer) => chunks.push(chunk));
-        res.on("end", () => {
-          const text = Buffer.concat(chunks).toString("utf8");
-          const status = res.statusCode ?? 0;
-          if (!text) {
-            resolve({
-              ok: false,
-              status,
-              errorCode: "internal",
-              errorMessage: `Empty response body from Gateway (status ${status})`
-            });
-            return;
-          }
-          let parsed: unknown;
-          try {
-            parsed = JSON.parse(text);
-          } catch {
-            resolve({
-              ok: false,
-              status,
-              errorCode: "internal",
-              errorMessage: `Malformed response body from Gateway: ${text.slice(0, 256)}`
-            });
-            return;
-          }
-          if (status >= 200 && status < 300) {
-            const { result } = parsed as { result?: T };
-            if (result === undefined) {
-              resolve({
-                ok: false,
-                status,
-                errorCode: "internal",
-                errorMessage: "Gateway response missing `result` field"
-              });
-              return;
-            }
-            resolve({ ok: true, status, result });
-            return;
-          }
-          const errEnv = (parsed as { error?: { code?: string; message?: string } }).error;
-          resolve({
-            ok: false,
-            status,
-            errorCode: errEnv?.code ?? "internal",
-            errorMessage: errEnv?.message ?? `Gateway returned HTTP ${status}`
-          });
-        });
-        res.on("error", (err) => {
-          logger.warn({ err }, `PKCS#11 RPC response stream error [port=${args.port}]`);
-          reject(err);
-        });
-      }
-    );
-    req.on("timeout", () => {
-      req.destroy(new Error(`PKCS#11 RPC timed out after ${args.timeoutMs ?? PKCS11_RPC_TIMEOUT_MS}ms`));
-    });
-    req.on("error", (err) => {
-      logger.warn({ err }, `PKCS#11 RPC request error [port=${args.port}]`);
-      reject(err);
-    });
-    req.write(payload);
-    req.end();
+  const { status, text } = await postGatewayRpc({
+    port: args.port,
+    path: args.endpoint,
+    payload: JSON.stringify(args.body),
+    timeoutMs: args.timeoutMs ?? PKCS11_RPC_TIMEOUT_MS,
+    label: "PKCS#11"
   });
+
+  if (status === 404) {
+    return {
+      ok: false,
+      status,
+      errorCode: Pkcs11ErrorCode.UnsupportedGatewayVersion,
+      errorMessage: "This gateway version does not support this operation. Update the gateway to the latest version."
+    };
+  }
+  if (!text) {
+    return {
+      ok: false,
+      status,
+      errorCode: Pkcs11ErrorCode.Internal,
+      errorMessage: `Empty response body from Gateway (status ${status})`
+    };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return {
+      ok: false,
+      status,
+      errorCode: Pkcs11ErrorCode.Internal,
+      errorMessage: `Malformed response body from Gateway: ${text.slice(0, 256)}`
+    };
+  }
+  if (status >= 200 && status < 300) {
+    const { result } = parsed as { result?: T };
+    if (result === undefined) {
+      return {
+        ok: false,
+        status,
+        errorCode: Pkcs11ErrorCode.Internal,
+        errorMessage: "Gateway response missing `result` field"
+      };
+    }
+    return { ok: true, status, result };
+  }
+  const errEnv = (parsed as { error?: { code?: string; message?: string } }).error;
+  return {
+    ok: false,
+    status,
+    errorCode: errEnv?.code ?? "internal",
+    errorMessage: errEnv?.message ?? `Gateway returned HTTP ${status}`
+  };
 };
 
 export const isRetryablePkcs11RpcError = (failure: Pkcs11RpcFailure): boolean => {
   if (failure.status === 502 || failure.status === 503 || failure.status === 504) return true;
   switch (failure.errorCode) {
-    case "driver_unavailable":
-    case "gateway_timeout":
-    case "pkcs11_not_supported":
+    case Pkcs11ErrorCode.DriverUnavailable:
+    case Pkcs11ErrorCode.GatewayTimeout:
+    case Pkcs11ErrorCode.NotSupported:
+    case Pkcs11ErrorCode.UnsupportedGatewayVersion:
       return true;
     default:
       return false;

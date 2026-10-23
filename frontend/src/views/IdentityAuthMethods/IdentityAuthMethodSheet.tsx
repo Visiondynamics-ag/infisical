@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { subject } from "@casl/ability";
-import { useParams } from "@tanstack/react-router";
 import { LockIcon, Trash2Icon } from "lucide-react";
 
 import { createNotification } from "@app/components/notifications";
@@ -37,7 +36,7 @@ import {
   ProjectPermissionSub,
   useOrganization
 } from "@app/context";
-import { usePopUp, useScopeVariant } from "@app/hooks";
+import { usePopUp, useRouteProjectId, useScopeVariant } from "@app/hooks";
 import {
   IdentityAuthMethod,
   identityAuthToNameMap,
@@ -117,7 +116,7 @@ export const IdentityAuthMethodSheet = ({
   isLockedOut,
   onMutated
 }: Props) => {
-  const { projectId } = useParams({ strict: false });
+  const projectId = useRouteProjectId();
   const { currentOrg } = useOrganization();
   const orgId = currentOrg?.id || "";
   const scopeVariant = useScopeVariant();
@@ -207,7 +206,7 @@ export const IdentityAuthMethodSheet = ({
               )}
             </SheetTitle>
           </SheetHeader>
-          <div className="flex thin-scrollbar flex-1 flex-col overflow-y-auto px-4 pb-4">
+          <div className="flex thin-scrollbar flex-1 flex-col overflow-y-auto p-4">
             <Content identityId={identityId} isLockedOut={isLockedOut} onMutated={onMutated} />
           </div>
           <SheetFooter className="justify-between border-t">
@@ -215,8 +214,8 @@ export const IdentityAuthMethodSheet = ({
               type={projectId ? "project" : "org"}
               I={
                 projectId
-                  ? ProjectPermissionIdentityActions.Edit
-                  : OrgPermissionIdentityActions.Edit
+                  ? ProjectPermissionIdentityActions.EditAuth
+                  : OrgPermissionIdentityActions.EditAuth
               }
               a={
                 projectId

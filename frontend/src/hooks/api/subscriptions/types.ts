@@ -2,6 +2,7 @@ export enum SubscriptionPlanTypes {
   Starter = "starter",
   Pro = "pro",
   ProAnnual = "pro-annual",
+  Advanced = "advanced",
   Team = "team",
   TeamAnnual = "team-annual",
   Enterprise = "enterprise",
@@ -9,19 +10,34 @@ export enum SubscriptionPlanTypes {
   OnPremEnterprise = "one-prem-enterprise"
 }
 
+export type SubscriptionPlanNotice = {
+  type: "trial_payment_failed";
+  productKey: string;
+  trialPlanKey: string | null;
+  accessEndsAt: string;
+  nextAttemptAt: string | null;
+  cause: string | null;
+};
+
 export type SubscriptionPlan = {
+  productPlans?: {
+    productKey: string;
+    planKey: string | null;
+    status: string | null;
+    trialPlanKey: string | null;
+    trialEndsAt: string | null;
+  }[];
+  notices?: SubscriptionPlanNotice[];
   id: string;
-  membersUsed: number;
   memberLimit: number;
-  identitiesUsed: number;
   identityLimit: number;
+  enforceIdentityLimit?: boolean;
   auditLogs: boolean;
   dynamicSecret: boolean;
-  auditLogsRetentionDays: number;
+  auditLogsRetentionDays: number | null;
   auditLogStreamLimit: number;
   auditLogStreams: boolean;
   customAlerts: boolean;
-  customRateLimits: boolean;
   pitRecovery: boolean;
   githubOrgSync: boolean;
   subOrganization?: boolean;
@@ -29,6 +45,7 @@ export type SubscriptionPlan = {
   rbac: boolean;
   secretVersioning: boolean;
   slug: SubscriptionPlanTypes;
+  isOffline?: boolean;
   secretApproval: boolean;
   secretRotation: boolean;
   tier: number;
@@ -36,7 +53,6 @@ export type SubscriptionPlan = {
   workspacesUsed: number;
   environmentLimit: number;
   samlSSO: boolean;
-  sshHostGroups: boolean;
   secretAccessInsights: boolean;
   auditReports: boolean;
   hsm: boolean;
@@ -55,15 +71,35 @@ export type SubscriptionPlan = {
     | null;
   trial_end: number | null;
   has_used_trial: boolean;
-  caCrl: boolean;
   instanceUserManagement: boolean;
   gateway: boolean;
   gatewayPool: boolean;
+  pamEnterpriseAlerting: boolean;
   externalKms: boolean;
-  pkiEst: boolean;
+  // PKI / Cert Manager. The /plan route returns z.any(), so nothing enforces that this mirrors
+  // the backend's TFeatureSet.
   pkiAcme: boolean;
-  pkiLegacyTemplates: boolean;
+  pkiEst: boolean;
+  pkiScep: boolean;
   pkiPqc: boolean;
+  caCrl: boolean;
+  pkiOcsp: boolean;
+  pkiAwsKmsSigning: boolean;
+  pkiEnterpriseCaIntegrations: boolean;
+  pkiExternalIntermediateCa: boolean;
+  pkiDiscovery: boolean;
+  pkiEnterpriseAlerting: boolean;
+  pkiApprovals: boolean;
+  pkiSyncs: boolean;
+  pkiLegacyTemplates: boolean;
+  pkiCodeSigning: boolean;
+  // maxCas caps every CA type, maxInternalCas caps INTERNAL only. Both enforced.
+  maxCas: number | null;
+  maxInternalCas: number | null;
+  maxCertificates: number | null;
+  // 0 means the plan has no wildcard support; wildcards also count toward maxCertificates.
+  maxWildcardCertificates: number | null;
+  maxSansPerCertificate: number | null;
   kmsPqc: boolean;
   enforceMfa: boolean;
   enforceGoogleSSO: boolean;
@@ -71,7 +107,6 @@ export type SubscriptionPlan = {
   kmip: boolean;
   secretScanning: boolean;
   enterpriseSecretSyncs: boolean;
-  enterpriseCertificateSyncs: boolean;
   enterpriseAppConnections: boolean;
   cardDeclined?: boolean;
   cardDeclinedReason?: string;
@@ -81,4 +116,12 @@ export type SubscriptionPlan = {
   emailDomainVerification: boolean;
   honeyTokens: boolean;
   honeyTokenLimit: number;
+  secretsBrokering: boolean;
+  agentVaultByoS3: boolean;
+  pam?: boolean | null;
+  enterprisePamAccount?: boolean | null;
+  maxPamAccounts?: number | null;
+  certManager?: boolean | null;
+  secretsFolderRbac: boolean;
+  crossProjectSecretSharing: boolean;
 };

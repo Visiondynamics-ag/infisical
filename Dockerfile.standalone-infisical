@@ -1,12 +1,31 @@
 ARG POSTHOG_HOST=https://app.posthog.com
 ARG POSTHOG_API_KEY=posthog-api-key
 ARG INTERCOM_ID=intercom-id
-ARG CAPTCHA_SITE_KEY=captcha-site-key
 
-FROM node:22.22.0-trixie-slim AS base
+ARG INFISICAL_CLI_VERSION=0.44.6
 
-# Fixes NPM vulnerability: https://security.snyk.io/vuln/SNYK-JS-CROSSSPAWN-8303230
-RUN npm install -g npm@10.9.0
+# Keep the upstream Node ABI while rebuilding all native dependencies on Ubuntu.
+FROM node:26.12.1-trixie-slim@sha256:36793bcbb160a6a16cede1e62b93f84e26b78a972a8a4c0b879c1c12f22761ec AS node-distribution
+RUN npm install --global npm@11.21.1 --ignore-scripts --no-audit --no-fund
+
+FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac AS ubuntu-base
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends ca-certificates libstdc++6 libatomic1 \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM ubuntu-base AS base
+COPY --from=node-distribution /usr/local/ /usr/local/
+COPY --from=node-distribution /opt/ /opt/
+ENTRYPOINT ["docker-entrypoint.sh"]
+
+# This is an explicitly versioned local backport, not an Ubuntu-issued fix.
+FROM ubuntu-base AS lmdb-builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential ca-certificates curl debhelper doxygen \
+    && rm -rf /var/lib/apt/lists/*
+COPY docker/lmdb /lmdb-backport
+RUN sh /lmdb-backport/build-deb.sh
 
 FROM base AS frontend-dependencies
 
@@ -36,19 +55,11 @@ ENV VITE_INTERCOM_ID $INTERCOM_ID
 ARG INFISICAL_PLATFORM_VERSION
 ENV INFISICAL_PLATFORM_VERSION $INFISICAL_PLATFORM_VERSION
 ENV VITE_INFISICAL_PLATFORM_VERSION $INFISICAL_PLATFORM_VERSION
-ARG CAPTCHA_SITE_KEY
-ENV VITE_CAPTCHA_SITE_KEY $CAPTCHA_SITE_KEY
 ARG FRONTEND_BUILD_HEAP_MIB=8192
+ENV NODE_OPTIONS="--max-old-space-size=${FRONTEND_BUILD_HEAP_MIB}"
 
 # Build
-RUN case "$FRONTEND_BUILD_HEAP_MIB" in \
-      [1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]) ;; \
-      *) echo "INVALID_FRONTEND_BUILD_HEAP_MIB" >&2; exit 1 ;; \
-    esac && \
-    if [ "$FRONTEND_BUILD_HEAP_MIB" -lt 512 ] || [ "$FRONTEND_BUILD_HEAP_MIB" -gt 8192 ]; then \
-      echo "INVALID_FRONTEND_BUILD_HEAP_MIB" >&2; exit 1; \
-    fi && \
-    NODE_OPTIONS="--max-old-space-size=${FRONTEND_BUILD_HEAP_MIB}" npm run build
+RUN test "$FRONTEND_BUILD_HEAP_MIB" -ge 512 && test "$FRONTEND_BUILD_HEAP_MIB" -le 8192 && npm run build
 
 # Production image
 FROM base AS frontend-runner
@@ -59,22 +70,14 @@ RUN useradd --system --uid 1001 --gid nodejs non-root-user
 
 COPY --from=frontend-builder --chown=non-root-user:nodejs /app/dist ./
 
-USER non-root-user
+USER 1001
 
 ##
 ## BACKEND
 ##
 
-# Go sidecar build (parallel stage)
-FROM golang:1.26-trixie AS go-builder
-WORKDIR /app
-COPY backend-go/go.mod backend-go/go.sum ./
-RUN go mod download
-COPY backend-go/ .
-RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o /go-sidecar ./cmd/infisical/main.go
-
 # Oracle Instant Client (parallel stage — downloads while other stages build)
-FROM debian:trixie-slim AS oracle
+FROM ubuntu-base AS oracle
 RUN apt-get update && apt-get install -y unzip wget ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -106,6 +109,7 @@ RUN apt-get update && apt-get install -y \
     g++ \
     unixodbc \
     freetds-bin \
+    tdsodbc \
     unixodbc-dev \
     libc-dev \
     freetds-dev \
@@ -119,7 +123,6 @@ RUN npm ci
 
 COPY /backend .
 COPY --chown=non-root-user:nodejs standalone-entrypoint.sh standalone-entrypoint.sh
-RUN npm i -g tsconfig-paths
 ENV NODE_OPTIONS="--max-old-space-size=8192"
 RUN npm run build
 
@@ -148,6 +151,7 @@ RUN apt-get update && apt-get install -y \
     g++ \
     unixodbc \
     freetds-bin \
+    tdsodbc \
     unixodbc-dev \
     libc-dev \
     freetds-dev \
@@ -167,49 +171,76 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     unixodbc \
     freetds-bin \
+    tdsodbc \
     && rm -rf /var/lib/apt/lists/*
 
 # Configure ODBC
-RUN printf "[FreeTDS]\nDescription = FreeTDS Driver\nDriver = /usr/lib/x86_64-linux-gnu/odbc/libtdsodbc.so\nSetup = /usr/lib/x86_64-linux-gnu/odbc/libtdsS.so\nFileUsage = 1\n" > /etc/odbcinst.ini
+RUN driver=$(find /usr/lib -name libtdsodbc.so -type f -print -quit) \
+    && test -n "$driver" \
+    && printf '[FreeTDS]\nDescription = FreeTDS Driver\nDriver = %s\nFileUsage = 1\n' "$driver" > /etc/odbcinst.ini
 
 COPY --from=backend-build /app .
-RUN rm -rf ./node_modules ./bdd ./e2e-test
+RUN rm -rf ./node_modules ./bdd ./e2e-test ./src
 COPY --from=backend-prod-deps /app/node_modules ./node_modules
 
 RUN mkdir frontend-build
 
+# OpenSSL 3.5.9 supplies the PQC (ML-DSA / SLH-DSA) algorithms the certificate
+# stack needs. It is built here rather than in the production stage so the
+# toolchain it requires does not ship in the runtime image.
+FROM base AS openssl-pqc-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    perl \
+    wget \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp/openssl-build
+RUN wget -q https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz \
+    && echo "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a  openssl-3.5.9.tar.gz" | sha256sum -c - \
+    && tar -xf openssl-3.5.9.tar.gz \
+    && cd openssl-3.5.9 \
+    && ./Configure --prefix=/opt/openssl-pqc --openssldir=/opt/openssl-pqc/ssl no-docs \
+    && make -j2 \
+    && make install_sw \
+    && cd / \
+    && rm -rf /tmp/openssl-build
+
 # Production stage
 FROM base AS production
 
-# Runtime dependencies + build tools needed for PQC OpenSSL build
-RUN apt-get update && apt-get install -y \
+# Runtime dependencies only. The PQC OpenSSL toolchain lives in
+# openssl-pqc-builder; nothing here compiles.
+ARG INFISICAL_CLI_VERSION
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     bash \
     curl \
     git \
     unixodbc \
     freetds-bin \
+    tdsodbc \
+    # the ECS container health check shells out to wget; dropping it fails the
+    # probe with exit 127 even while the server is serving /api/status fine
     wget \
-    perl \
-    build-essential \
-    libssl-dev \
     openssh-client \
+    libxml2 \
     libaio1t64 \
     smbclient \
     && curl -1sLf 'https://artifacts-cli.infisical.com/setup.deb.sh' | bash \
-    && apt-get update && apt-get install -y infisical=0.43.90 \
-    # Patch CVEs in base image packages (pinned versions for reproducibility)
-    && apt-get install -y --only-upgrade \
-    libgnutls30t64=3.8.9-3+deb13u4 \
-    libc6=2.41-12+deb13u4 \
-    libc-bin=2.41-12+deb13u4 \
-    libssl3t64=3.5.7-1~deb13u3 \
-    dpkg=1.22.22 \
-    libcap2 \
-    libnghttp2-14=1.64.0-1.1+deb13u1 \
-    libngtcp2-16=1.11.0-1+deb13u1 \
-    libngtcp2-crypto-gnutls8=1.11.0-1+deb13u1 \
+    && test -n "$INFISICAL_CLI_VERSION" \
+    && apt-get update && apt-get install -y infisical="$INFISICAL_CLI_VERSION" \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libxml2)" ge 2.9.14+dfsg-1.3ubuntu3.8 \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' openssh-client)" ge 1:9.6p1-3ubuntu13.18 \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=lmdb-builder /out /tmp/lmdb-backport
+RUN dpkg --compare-versions "$(dpkg-query -W -f='${Version}' liblmdb0)" le 0.9.31-1build1+infisical1 \
+    && apt-get install -y --no-install-recommends /tmp/lmdb-backport/liblmdb0_*.deb \
+    && test "$(dpkg-query -W -f='${Version}' liblmdb0)" = 0.9.31-1build1+infisical1 \
+    && rm -rf /tmp/lmdb-backport /var/lib/apt/lists/*
 
 # Copy Oracle Instant Client from parallel stage
 COPY --from=oracle /opt/oracle /opt/oracle
@@ -222,23 +253,16 @@ RUN ARCH=$(dpkg --print-architecture) && \
     echo /opt/oracle/instantclient_23_26 > /etc/ld.so.conf.d/oracle-instantclient.conf && \
     ldconfig
 
-# Build OpenSSL 3.5.6 for PQC (ML-DSA / SLH-DSA) certificate support.
-# Installed to /opt/openssl-pqc so it does not conflict with the system OpenSSL.
-WORKDIR /tmp/openssl-build
-RUN wget -q https://github.com/openssl/openssl/releases/download/openssl-3.5.6/openssl-3.5.6.tar.gz \
-    && echo "deae7c80cba99c4b4f940ecadb3c3338b13cb77418409238e57d7f31f2a3b736  openssl-3.5.6.tar.gz" | sha256sum -c - \
-    && tar -xf openssl-3.5.6.tar.gz \
-    && cd openssl-3.5.6 \
-    && ./Configure --prefix=/opt/openssl-pqc --openssldir=/opt/openssl-pqc/ssl no-docs \
-    && make -j"$(nproc)" \
-    && make install_sw \
-    && cd / \
-    && rm -rf /tmp/openssl-build
+# PQC OpenSSL, built in openssl-pqc-builder. Consumed as a self-contained
+# prefix by lib/crypto/pqc (bin/openssl plus lib64:lib on the load path).
+COPY --from=openssl-pqc-builder /opt/openssl-pqc /opt/openssl-pqc
 
 WORKDIR /
 
 # Configure ODBC in production
-RUN printf "[FreeTDS]\nDescription = FreeTDS Driver\nDriver = /usr/lib/x86_64-linux-gnu/odbc/libtdsodbc.so\nSetup = /usr/lib/x86_64-linux-gnu/odbc/libtdsS.so\nFileUsage = 1\n" > /etc/odbcinst.ini
+RUN driver=$(find /usr/lib -name libtdsodbc.so -type f -print -quit) \
+    && test -n "$driver" \
+    && printf '[FreeTDS]\nDescription = FreeTDS Driver\nDriver = %s\nFileUsage = 1\n' "$driver" > /etc/odbcinst.ini
 
 # Setup user permissions
 RUN groupadd --system --gid 1001 nodejs \
@@ -255,12 +279,9 @@ ARG POSTHOG_API_KEY
 ENV POSTHOG_API_KEY=$POSTHOG_API_KEY
 ARG INTERCOM_ID=intercom-id
 ENV INTERCOM_ID=$INTERCOM_ID
-ARG CAPTCHA_SITE_KEY
-ENV CAPTCHA_SITE_KEY=$CAPTCHA_SITE_KEY
 
 COPY --from=backend-runner /app /backend
 COPY --from=frontend-runner /app ./backend/frontend-build
-COPY --from=go-builder /go-sidecar /backend/go-sidecar
 
 # Make export-assets script executable for CDN asset extraction
 RUN chmod +x /backend/scripts/export-assets.sh
@@ -283,7 +304,7 @@ LABEL org.opencontainers.image.documentation="https://infisical.com/docs"
 LABEL org.opencontainers.image.source="https://github.com/Infisical/infisical"
 LABEL org.opencontainers.image.vendor="Infisical"
 LABEL org.opencontainers.image.licenses="MIT"
-LABEL org.opencontainers.image.base.name="node:22.22.0-trixie-slim"
+LABEL org.opencontainers.image.base.name="ubuntu:24.04"
 
 # OCI Image Labels - Dynamic metadata (set via build args)
 LABEL org.opencontainers.image.version="${INFISICAL_PLATFORM_VERSION}"
@@ -305,6 +326,7 @@ ENV TELEMETRY_ENABLED true
 EXPOSE 8080
 EXPOSE 443
 
-USER non-root-user
+# Use numeric UID so Kubernetes can verify the image runs as non-root
+USER 1001
 
 CMD ["./standalone-entrypoint.sh"]

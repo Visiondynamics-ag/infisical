@@ -2,10 +2,10 @@ import RE2 from "re2";
 import { z } from "zod";
 
 import { TDynamicSecrets } from "@app/db/schemas";
-import { SshCertKeyAlgorithm } from "@app/ee/services/ssh-certificate/ssh-certificate-types";
+import { SSH_CERT_KEY_ALGORITHMS, SshCertKeyAlgorithm } from "@app/lib/ssh";
 import { CharacterType, characterValidator } from "@app/lib/validator/validate-string";
 import { ResourceMetadataNonEncryptionSchema } from "@app/services/resource-metadata/resource-metadata-schema";
-import { TConstraint } from "@app/services/secret-validation-rule/secret-validation-rule-types";
+import { TConstraints } from "@app/services/secret-validation-rule/secret-validation-rule-types";
 
 import {
   ActorIdentityAttributes,
@@ -270,44 +270,83 @@ export const DynamicSecretAwsIamSchema = z.preprocess(
     }
     return val;
   },
-  z.discriminatedUnion("method", [
-    z.object({
-      method: z.literal(AwsIamAuthType.AccessKey),
-      credentialType: z.nativeEnum(AwsIamCredentialType).default(AwsIamCredentialType.IamUser),
-      accessKey: z.string().trim().min(1),
-      secretAccessKey: z.string().trim().min(1),
-      region: z.string().trim().min(1),
-      awsPath: z.string().trim().optional(),
-      permissionBoundaryPolicyArn: z.string().trim().optional(),
-      policyDocument: z.string().trim().optional(),
-      userGroups: z.string().trim().optional(),
-      policyArns: z.string().trim().optional(),
-      tags: ResourceMetadataNonEncryptionSchema.optional()
-    }),
-    z.object({
-      method: z.literal(AwsIamAuthType.AssumeRole),
-      credentialType: z.nativeEnum(AwsIamCredentialType).default(AwsIamCredentialType.IamUser),
-      roleArn: z.string().trim().min(1, "Role ARN required"),
-      region: z.string().trim().min(1),
-      awsPath: z.string().trim().optional(),
-      permissionBoundaryPolicyArn: z.string().trim().optional(),
-      policyDocument: z.string().trim().optional(),
-      userGroups: z.string().trim().optional(),
-      policyArns: z.string().trim().optional(),
-      tags: ResourceMetadataNonEncryptionSchema.optional()
-    }),
-    z.object({
-      method: z.literal(AwsIamAuthType.IRSA),
-      credentialType: z.nativeEnum(AwsIamCredentialType).default(AwsIamCredentialType.IamUser),
-      region: z.string().trim().min(1),
-      awsPath: z.string().trim().optional(),
-      permissionBoundaryPolicyArn: z.string().trim().optional(),
-      policyDocument: z.string().trim().optional(),
-      userGroups: z.string().trim().optional(),
-      policyArns: z.string().trim().optional(),
-      tags: ResourceMetadataNonEncryptionSchema.optional()
+  z
+    .discriminatedUnion("method", [
+      z.object({
+        method: z.literal(AwsIamAuthType.AccessKey),
+        credentialType: z.nativeEnum(AwsIamCredentialType).default(AwsIamCredentialType.IamUser),
+        accessKey: z.string().trim().min(1),
+        secretAccessKey: z.string().trim().min(1),
+        region: z.string().trim().min(1),
+        awsPath: z.string().trim().optional(),
+        permissionBoundaryPolicyArn: z.string().trim().optional(),
+        policyDocument: z.string().trim().optional(),
+        userGroups: z.string().trim().optional(),
+        policyArns: z.string().trim().optional(),
+        tags: ResourceMetadataNonEncryptionSchema.optional()
+      }),
+      z.object({
+        method: z.literal(AwsIamAuthType.AssumeRole),
+        credentialType: z.nativeEnum(AwsIamCredentialType).default(AwsIamCredentialType.IamUser),
+        roleArn: z.string().trim().min(1, "Role ARN required"),
+        region: z.string().trim().min(1),
+        awsPath: z.string().trim().optional(),
+        permissionBoundaryPolicyArn: z.string().trim().optional(),
+        policyDocument: z.string().trim().optional(),
+        userGroups: z.string().trim().optional(),
+        policyArns: z.string().trim().optional(),
+        sessionPolicyArns: z.string().trim().optional(),
+        sessionPolicyDocument: z.string().trim().optional(),
+        tags: ResourceMetadataNonEncryptionSchema.optional()
+      }),
+      z.object({
+        method: z.literal(AwsIamAuthType.IRSA),
+        credentialType: z.nativeEnum(AwsIamCredentialType).default(AwsIamCredentialType.IamUser),
+        region: z.string().trim().min(1),
+        awsPath: z.string().trim().optional(),
+        permissionBoundaryPolicyArn: z.string().trim().optional(),
+        policyDocument: z.string().trim().optional(),
+        userGroups: z.string().trim().optional(),
+        policyArns: z.string().trim().optional(),
+        tags: ResourceMetadataNonEncryptionSchema.optional()
+      })
+    ])
+    .superRefine((data, ctx) => {
+      const reject = (path: string, message: string) =>
+        ctx.addIssue({ path: [path], code: z.ZodIssueCode.custom, message });
+      const countCsvArns = (value: string) => value.split(",").filter((arn) => arn.trim()).length;
+
+      if (data.credentialType === AwsIamCredentialType.TemporaryCredentials) {
+        // session policy fields exist only on the AssumeRole member (STS AssumeRole alone supports them; GetSessionToken,
+        // used by access key / IRSA, has no Policy/PolicyArns params), so this guard also narrows the type for TS
+        if (data.method === AwsIamAuthType.AssumeRole) {
+          if (data.sessionPolicyArns && countCsvArns(data.sessionPolicyArns) > 10) {
+            reject("sessionPolicyArns", "AWS allows at most 10 managed policy ARNs as session policies");
+          }
+          // session policies count the full plaintext against the 2,048 character limit
+          if (data.sessionPolicyDocument && data.sessionPolicyDocument.length > 2048) {
+            reject("sessionPolicyDocument", "AWS limits inline session policies to 2,048 characters of plaintext");
+          }
+        }
+        return;
+      }
+
+      // IAM User credential type: session policies have no meaning because no STS session is created
+      if (data.method === AwsIamAuthType.AssumeRole) {
+        if (data.sessionPolicyArns) {
+          reject(
+            "sessionPolicyArns",
+            "Session policy ARNs only apply to the Temporary Credentials credential type. Use Policy ARNs to grant permissions to created IAM users."
+          );
+        }
+        if (data.sessionPolicyDocument) {
+          reject(
+            "sessionPolicyDocument",
+            "A session policy document only applies to the Temporary Credentials credential type. Use a policy document to grant permissions to created IAM users."
+          );
+        }
+      }
     })
-  ])
 );
 
 export const DynamicSecretMongoAtlasSchema = z.object({
@@ -790,7 +829,10 @@ export enum DynamicSecretProviders {
   Couchbase = "couchbase",
   Milvus = "milvus",
   Ssh = "ssh",
-  IbmApiConnect = "ibm-api-connect"
+  IbmApiConnect = "ibm-api-connect",
+  Tailscale = "tailscale",
+  OAuth2 = "oauth2",
+  Kafka = "kafka"
 }
 
 export const DynamicSecretIbmApiConnectSchema = z.object({
@@ -806,16 +848,345 @@ export const DynamicSecretIbmApiConnectSchema = z.object({
   gatewayPoolId: z.string().nullable().optional()
 });
 
+export enum TailscaleKeyAuthType {
+  AuthKeys = "auth_keys",
+  OAuthKeys = "oauth_keys",
+  FederatedKeys = "federated_keys"
+}
+
+export enum TailscaleAuthMethod {
+  ApiKey = "api_key",
+  OAuth = "oauth"
+}
+
+// OAuth/federated credentials issued with these scopes could create or modify other credentials,
+// which would let a lease escalate its own privileges. Block them at both the schema and provider level.
+export const TAILSCALE_BLOCKED_SCOPES = new Set([
+  "auth_keys",
+  "oauth_keys",
+  "federated_keys",
+  "api_access_tokens",
+  "all"
+]);
+
+const DynamicSecretTailscaleAuthSchema = z.discriminatedUnion("method", [
+  z.object({
+    method: z.literal(TailscaleAuthMethod.ApiKey),
+    apiKey: z.string().trim().min(1).describe("Tailscale API access token used to create and revoke keys.")
+  }),
+  z.object({
+    method: z.literal(TailscaleAuthMethod.OAuth),
+    clientId: z.string().trim().min(1).describe("Tailscale OAuth client ID."),
+    clientSecret: z.string().trim().min(1).describe("Tailscale OAuth client secret.")
+  })
+]);
+
+export const DynamicSecretTailscaleSchema = z
+  .discriminatedUnion("authType", [
+    z.object({
+      authType: z.literal(TailscaleKeyAuthType.AuthKeys),
+      auth: DynamicSecretTailscaleAuthSchema,
+      tailnet: z
+        .string()
+        .trim()
+        .min(1)
+        .default("-")
+        .describe("Tailnet identifier. Use '-' for the token owner's default tailnet."),
+      description: z.string().trim().max(50).optional().describe("Description applied to the created key."),
+      tags: z
+        .array(z.string().trim().min(1))
+        .default([])
+        .describe("ACL tags to attach to devices (e.g. tag:ci). Required when authenticating with an OAuth token."),
+      reusable: z.boolean().default(false).describe("Whether the auth key can register multiple devices."),
+      preauthorized: z.boolean().default(false).describe("Whether devices registered with the key are pre-authorized.")
+    }),
+    z.object({
+      authType: z.literal(TailscaleKeyAuthType.OAuthKeys),
+      auth: DynamicSecretTailscaleAuthSchema,
+      tailnet: z
+        .string()
+        .trim()
+        .min(1)
+        .default("-")
+        .describe("Tailnet identifier. Use '-' for the token owner's default tailnet."),
+      description: z.string().trim().max(50).optional().describe("Description applied to the created OAuth client."),
+      tags: z
+        .array(z.string().trim().min(1))
+        .default([])
+        .describe("ACL tags to attach (e.g. tag:ci). Required if scopes include devices:core or auth_keys."),
+      scopes: z.array(z.string().trim().min(1)).min(1).describe("OAuth scopes granted to the client.")
+    }),
+    z.object({
+      authType: z.literal(TailscaleKeyAuthType.FederatedKeys),
+      auth: DynamicSecretTailscaleAuthSchema,
+      tailnet: z
+        .string()
+        .trim()
+        .min(1)
+        .default("-")
+        .describe("Tailnet identifier. Use '-' for the token owner's default tailnet."),
+      description: z
+        .string()
+        .trim()
+        .max(50)
+        .optional()
+        .describe("Description applied to the created federated identity."),
+      tags: z
+        .array(z.string().trim().min(1))
+        .default([])
+        .describe("ACL tags to attach (e.g. tag:ci). Required if scopes include devices:core or auth_keys."),
+      scopes: z
+        .array(z.string().trim().min(1))
+        .min(1)
+        .describe("OAuth scopes granted to tokens issued via this federated identity."),
+      issuer: z.string().trim().min(1).describe("HTTPS URL of the OIDC issuer trusted for token exchange."),
+      subject: z.string().trim().min(1).describe("Pattern matched against the sub claim of the OIDC identity token."),
+      audience: z
+        .string()
+        .trim()
+        .optional()
+        .describe("Audience for the OIDC token exchange. Tailscale auto-generates one if omitted.")
+    })
+  ])
+  .superRefine((data, ctx) => {
+    // Tailscale requires ACL tags on tailnet-owned auth keys, which are the ones created via OAuth.
+    // Auth keys created with a user's API access token are user-owned and may omit tags.
+    if (
+      (data.authType === TailscaleKeyAuthType.OAuthKeys || data.authType === TailscaleKeyAuthType.FederatedKeys) &&
+      data.tags.length === 0
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["tags"],
+        message: "Tags are required when the key type is OAuth or Federated Identity"
+      });
+    }
+
+    // Block scopes that would let a lease escalate its own privileges (e.g. mint new auth/OAuth keys).
+    if (
+      (data.authType === TailscaleKeyAuthType.OAuthKeys || data.authType === TailscaleKeyAuthType.FederatedKeys) &&
+      data.scopes.some((scope) => TAILSCALE_BLOCKED_SCOPES.has(scope))
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["scopes"],
+        message: "OAuth credentials cannot be used to create or modify other credentials"
+      });
+    }
+  });
+
+export enum OAuth2GrantType {
+  ClientCredentials = "client-credentials"
+}
+
+export const OAUTH2_MAX_EXTRA_PARAMS = 20;
+
+// Parameters Infisical sets itself or that carry client authentication; letting extra params
+// override them would change the grant or leak credentials into the request body.
+export const OAUTH2_RESERVED_PARAMS = new Set([
+  "grant_type",
+  "scope",
+  "client_id",
+  "client_secret",
+  "client_assertion",
+  "client_assertion_type"
+]);
+
+// RFC 6749 section 3.3: scope-token = 1*( %x21 / %x23-5B / %x5D-7E )
+const OAUTH2_SCOPE_TOKEN_REGEX = new RE2(/^[\x21\x23-\x5B\x5D-\x7E]+$/);
+const OAUTH2_PARAM_KEY_REGEX = new RE2(/^[A-Za-z0-9._~:[\]-]+$/);
+const WHITESPACE_REGEX = new RE2(/\s+/);
+
+export const normalizeOAuth2Scope = (scope: string) =>
+  [...new Set(scope.split(WHITESPACE_REGEX).filter(Boolean))].join(" ");
+
+// RFC 7591 registry names, so they match what servers advertise in token_endpoint_auth_methods_supported
+export enum OAuth2ClientAuthMethod {
+  ClientSecretBasic = "client_secret_basic",
+  ClientSecretPost = "client_secret_post"
+}
+
+const OAuth2ClientSecretSchema = z
+  .string()
+  .trim()
+  .min(1, "Client secret is required")
+  .max(4096)
+  .describe("The OAuth 2.0 client secret.");
+
+export const OAuth2ClientAuthSchema = z.discriminatedUnion("method", [
+  z.object({
+    method: z
+      .literal(OAuth2ClientAuthMethod.ClientSecretBasic)
+      .describe("Send the client credentials in an HTTP Basic Authorization header."),
+    clientSecret: OAuth2ClientSecretSchema
+  }),
+  z.object({
+    method: z
+      .literal(OAuth2ClientAuthMethod.ClientSecretPost)
+      .describe("Send the client credentials as client_id and client_secret form parameters."),
+    clientSecret: OAuth2ClientSecretSchema
+  })
+]);
+
+export const DynamicSecretOAuth2Schema = z.discriminatedUnion("grantType", [
+  z.object({
+    grantType: z.literal(OAuth2GrantType.ClientCredentials),
+    tokenUrl: z
+      .string()
+      .trim()
+      .max(2048)
+      .url("Token URL must be a valid URL")
+      .describe("The authorization server's token endpoint."),
+    revocationUrl: z
+      .string()
+      .trim()
+      .max(2048)
+      .url("Revocation URL must be a valid URL")
+      .describe("The authorization server's RFC 7009 token revocation endpoint."),
+    clientId: z.string().trim().min(1, "Client ID is required").max(1024).describe("The OAuth 2.0 client ID."),
+    clientAuth: OAuth2ClientAuthSchema.describe(
+      "How Infisical authenticates the client to the token and revocation endpoints."
+    ),
+    scope: z
+      .string()
+      .trim()
+      .max(2048)
+      .superRefine((scope, ctx) => {
+        const invalidTokens = scope
+          .split(WHITESPACE_REGEX)
+          .filter((token) => token && !OAUTH2_SCOPE_TOKEN_REGEX.test(token));
+        if (invalidTokens.length) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Scope contains invalid characters: ${invalidTokens.map((token) => `'${token}'`).join(", ")}`
+          });
+        }
+      })
+      .transform((scope) => normalizeOAuth2Scope(scope) || undefined)
+      .optional()
+      .describe("Space-separated scopes to request. Leave empty to use the client's default scopes."),
+    extraParams: z
+      .array(
+        z.object({
+          key: z
+            .string()
+            .trim()
+            .min(1, "Parameter name is required")
+            .max(128)
+            .refine((key) => OAUTH2_PARAM_KEY_REGEX.test(key), "Parameter name contains invalid characters")
+            .refine(
+              (key) => !OAUTH2_RESERVED_PARAMS.has(key.toLowerCase()),
+              (key) => ({ message: `'${key}' is set by Infisical and can't be used as an extra parameter` })
+            ),
+          value: z.string().trim().min(1, "Parameter value is required").max(2048)
+        })
+      )
+      .max(OAUTH2_MAX_EXTRA_PARAMS, `At most ${OAUTH2_MAX_EXTRA_PARAMS} extra parameters are allowed`)
+      .superRefine((params, ctx) => {
+        const seen = new Set<string>();
+        params.forEach(({ key }, index) => {
+          if (seen.has(key)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: [index, "key"],
+              message: `Extra parameter '${key}' is set more than once`
+            });
+          }
+          seen.add(key);
+        });
+      })
+      .default([])
+      .describe("Additional form parameters sent with the token request, such as audience or resource.")
+  })
+]);
+
+export enum KafkaSaslMechanism {
+  Plain = "PLAIN",
+  ScramSha256 = "SCRAM-SHA-256",
+  ScramSha512 = "SCRAM-SHA-512"
+}
+
+// ACL values use Kafka's own names, which are also the keys of @platformatic/kafka's enum maps
+export enum KafkaAclResourceType {
+  Topic = "TOPIC",
+  Group = "GROUP",
+  Cluster = "CLUSTER",
+  TransactionalId = "TRANSACTIONAL_ID"
+}
+
+export enum KafkaAclPatternType {
+  Literal = "LITERAL",
+  Prefixed = "PREFIXED"
+}
+
+export enum KafkaAclOperation {
+  All = "ALL",
+  Read = "READ",
+  Write = "WRITE",
+  Create = "CREATE",
+  Delete = "DELETE",
+  Alter = "ALTER",
+  Describe = "DESCRIBE",
+  DescribeConfigs = "DESCRIBE_CONFIGS",
+  AlterConfigs = "ALTER_CONFIGS",
+  IdempotentWrite = "IDEMPOTENT_WRITE"
+}
+
+export enum KafkaAclPermissionType {
+  Allow = "ALLOW",
+  Deny = "DENY"
+}
+
+const KAFKA_CLUSTER_RESOURCE_NAME = "kafka-cluster";
+
+export const DynamicSecretKafkaSchema = z.object({
+  bootstrapServers: z
+    .array(z.object({ host: z.string().trim().min(1).max(255), port: z.number().int().min(1).max(65535) }))
+    .min(1)
+    .describe("Brokers Infisical tries in order until one connects"),
+  saslMechanism: z
+    .nativeEnum(KafkaSaslMechanism)
+    .describe("SASL mechanism Infisical uses to authenticate as the admin user"),
+  username: z.string().trim().min(1).max(255).describe("Admin username used to manage SCRAM users and ACLs"),
+  password: z.string().min(1).max(1024).describe("Admin password used to manage SCRAM users and ACLs"),
+  acls: z
+    .array(
+      z
+        .object({
+          resourceType: z.nativeEnum(KafkaAclResourceType),
+          patternType: z.nativeEnum(KafkaAclPatternType).default(KafkaAclPatternType.Literal),
+          resourceName: z.string().trim().min(1).max(255).describe('Resource name or prefix, or "*" for all'),
+          operation: z.nativeEnum(KafkaAclOperation),
+          permissionType: z.nativeEnum(KafkaAclPermissionType).default(KafkaAclPermissionType.Allow)
+        })
+        .refine(
+          ({ resourceType, resourceName }) =>
+            resourceType !== KafkaAclResourceType.Cluster || resourceName === KAFKA_CLUSTER_RESOURCE_NAME,
+          {
+            message: `Cluster ACLs must use the resource name '${KAFKA_CLUSTER_RESOURCE_NAME}'`,
+            path: ["resourceName"]
+          }
+        )
+    )
+    .min(1)
+    .describe("ACLs granted to each lease user"),
+  sslEnabled: z.boolean().default(false),
+  ca: z.string().max(10240).optional(),
+  sslRejectUnauthorized: z.boolean().default(true)
+});
+
 export const DynamicSecretSshSchema = z.object({
   principals: z.array(z.string().trim().min(1)).min(1),
-  keyAlgorithm: z.nativeEnum(SshCertKeyAlgorithm).default(SshCertKeyAlgorithm.ED25519)
+  keyAlgorithm: z.enum(SSH_CERT_KEY_ALGORITHMS).default(SshCertKeyAlgorithm.ED25519),
+  caKeyAlgorithm: z.enum(SSH_CERT_KEY_ALGORITHMS).default(SshCertKeyAlgorithm.ED25519)
 });
 
 export const SshStoredSchema = z.object({
   caPrivateKey: z.string(),
   caPublicKey: z.string(),
   principals: z.array(z.string().trim().min(1)).min(1),
-  keyAlgorithm: z.nativeEnum(SshCertKeyAlgorithm)
+  keyAlgorithm: z.enum(SSH_CERT_KEY_ALGORITHMS),
+  caKeyAlgorithm: z.enum(SSH_CERT_KEY_ALGORITHMS).default(SshCertKeyAlgorithm.ED25519)
 });
 
 export const DynamicSecretProviderSchema = z.discriminatedUnion("type", [
@@ -847,7 +1218,10 @@ export const DynamicSecretProviderSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal(DynamicSecretProviders.IbmApiConnect),
     inputs: DynamicSecretIbmApiConnectSchema
-  })
+  }),
+  z.object({ type: z.literal(DynamicSecretProviders.Tailscale), inputs: DynamicSecretTailscaleSchema }),
+  z.object({ type: z.literal(DynamicSecretProviders.OAuth2), inputs: DynamicSecretOAuth2Schema }),
+  z.object({ type: z.literal(DynamicSecretProviders.Kafka), inputs: DynamicSecretKafkaSchema })
 ]);
 
 // Extended metadata passed to a provider's create() call. When the project
@@ -858,12 +1232,22 @@ export const DynamicSecretProviderSchema = z.discriminatedUnion("type", [
 export type TDynamicProviderCreateMetadata = {
   projectId: string;
   passwordValidation?: {
-    constraints: TConstraint[];
+    constraints: TConstraints;
     ruleNames: string[];
   };
 };
 
+export type TDynamicProviderValidateMetadata = {
+  projectId: string;
+  previousInputs?: object;
+  defaultTTL?: string;
+  maxTTL?: string | null;
+  hasActiveLeases?: boolean;
+};
+
 export type TDynamicProviderFns = {
+  // keys of create()'s `data` that revoke() needs; stored encrypted on the lease and passed back as metadata.leaseData
+  persistedLeaseFields?: string[];
   create: (arg: {
     inputs: unknown;
     expireAt: number;
@@ -873,12 +1257,15 @@ export type TDynamicProviderFns = {
     metadata: TDynamicProviderCreateMetadata;
     config?: TDynamicSecretLeaseConfig;
   }) => Promise<{ entityId: string; data: unknown }>;
-  validateConnection: (inputs: unknown, metadata: { projectId: string }) => Promise<boolean>;
-  validateProviderInputs: (inputs: object, metadata: { projectId: string }) => Promise<unknown>;
+  validateConnection: (
+    inputs: unknown,
+    metadata: { projectId: string; defaultTTL?: string; maxTTL?: string | null }
+  ) => Promise<boolean>;
+  validateProviderInputs: (inputs: object, metadata: TDynamicProviderValidateMetadata) => Promise<unknown>;
   revoke: (
     inputs: unknown,
     entityId: string,
-    metadata: { projectId: string },
+    metadata: { projectId: string; leaseData?: Record<string, string> },
     config?: TDynamicSecretLeaseConfig
   ) => Promise<{ entityId: string }>;
   renew: (

@@ -19,12 +19,12 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-  Switch,
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
   TextArea,
+  Toggle,
   Tooltip,
   TooltipContent,
   TooltipTrigger
@@ -42,6 +42,7 @@ import {
 } from "@app/hooks/api/appConnections";
 import { AppConnection } from "@app/hooks/api/appConnections/enums";
 
+import { CredentialRotationForm } from "./shared/CredentialRotationForm";
 import { AppConnectionFormFooter } from "./AppConnectionFormFooter";
 import {
   genericAppConnectionFieldsSchema,
@@ -97,20 +98,34 @@ export const LdapConnectionForm = ({ appConnection, onSubmit }: Props) => {
 
   const form = useForm<FormData>({
     resolver: zodResolver(formSchema),
-    defaultValues: appConnection ?? {
-      app: AppConnection.LDAP,
-      method: LdapConnectionMethod.SimpleBind,
-      gatewayId: null,
-      gatewayPoolId: null,
-      credentials: {
-        provider: LdapConnectionProvider.ActiveDirectory,
-        url: "",
-        dn: "",
-        password: "",
-        sslRejectUnauthorized: true,
-        sslCertificate: undefined
-      }
-    }
+    defaultValues: appConnection
+      ? {
+          ...appConnection,
+          isAutoRotationEnabled: appConnection.isAutoRotationEnabled ?? false,
+          rotation: appConnection.rotation ?? {
+            rotationInterval: 30,
+            rotateAtUtc: { hours: 0, minutes: 0 }
+          }
+        }
+      : {
+          app: AppConnection.LDAP,
+          method: LdapConnectionMethod.SimpleBind,
+          gatewayId: null,
+          gatewayPoolId: null,
+          isAutoRotationEnabled: false,
+          rotation: {
+            rotationInterval: 30,
+            rotateAtUtc: { hours: 0, minutes: 0 }
+          },
+          credentials: {
+            provider: LdapConnectionProvider.ActiveDirectory,
+            url: "",
+            dn: "",
+            password: "",
+            sslRejectUnauthorized: true,
+            sslCertificate: undefined
+          }
+        }
   });
 
   const { handleSubmit, control, setValue, watch } = form;
@@ -281,13 +296,20 @@ export const LdapConnectionForm = ({ appConnection, onSubmit }: Props) => {
                 control={control}
                 render={({ field: { value, onChange }, fieldState: { error } }) => (
                   <Field className="mb-4">
-                    <FieldLabel>Binding Password</FieldLabel>
-                    <SecretInput value={value} onChange={(e) => onChange(e.target.value)} />
-                    <FieldError errors={[error]} />
+                    <FieldLabel htmlFor="app-connection-ldap-password">Binding Password</FieldLabel>
+                    <SecretInput
+                      aria-describedby={error ? "app-connection-ldap-password-error" : undefined}
+                      id="app-connection-ldap-password"
+                      isError={Boolean(error)}
+                      value={value}
+                      onChange={(e) => onChange(e.target.value)}
+                    />
+                    <FieldError id="app-connection-ldap-password-error" errors={[error]} />
                   </Field>
                 )}
               />
             </div>
+            <CredentialRotationForm />
           </TabsContent>
           <TabsContent value="ssl">
             <p className="mb-3 text-xs text-muted">Requires ldaps:// URL</p>
@@ -323,7 +345,8 @@ export const LdapConnectionForm = ({ appConnection, onSubmit }: Props) => {
                         trusted SSL certificate.
                       </FieldDescription>
                     </FieldContent>
-                    <Switch
+                    <Toggle
+                      aria-invalid={Boolean(error)}
                       id="ssl-reject-unauthorized"
                       variant={scopeVariant}
                       checked={sslEnabled ? value : false}

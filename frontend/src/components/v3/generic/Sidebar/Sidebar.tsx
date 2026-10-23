@@ -1,5 +1,3 @@
-/* eslint-disable react/prop-types */
-
 import * as React from "react";
 import { Slot } from "@radix-ui/react-slot";
 import { cva, type VariantProps } from "cva";
@@ -38,7 +36,22 @@ const SIDEBAR_WIDTH_MOBILE = "18rem";
 const SIDEBAR_WIDTH_ICON = "3rem";
 const SIDEBAR_KEYBOARD_SHORTCUT = "b";
 
-type SidebarScope = "org" | "sub-org" | "project" | "admin";
+type SidebarScope =
+  | "org"
+  | "sub-org"
+  | "project"
+  | "pam"
+  | "agent-vault"
+  | "secret-scanning"
+  | "admin";
+
+// Products that own a colour repoint the shared --color-project variable rather than adding a parallel
+// set of scope classes.
+const SIDEBAR_SCOPE_COLOR_OVERRIDE: Partial<Record<SidebarScope, Record<string, string>>> = {
+  pam: { "--color-project": "#ed3453" },
+  "agent-vault": { "--color-project": "var(--color-product-av)" },
+  "secret-scanning": { "--color-project": "var(--color-product-ss)" }
+};
 
 const SidebarScopeContext = React.createContext<SidebarScope>("org");
 
@@ -197,15 +210,20 @@ function Sidebar({
               data-slot="sidebar"
               data-mobile="true"
               className={cn(
-                "w-(--sidebar-width) bg-gradient-to-r to-transparent p-0 text-foreground [&>button]:hidden",
-                scope === "project" && "from-project/5",
+                "w-(--sidebar-width) bg-gradient-to-r to-transparent p-0 text-foreground in-data-[theme=light]:bg-none [&>button]:hidden",
+                (scope === "project" ||
+                  scope === "pam" ||
+                  scope === "agent-vault" ||
+                  scope === "secret-scanning") &&
+                  "from-project/5",
                 scope === "sub-org" && "from-sub-org/5",
                 scope === "org" && "from-org/5",
                 scope === "admin" && "from-admin/5"
               )}
               style={
                 {
-                  "--sidebar-width": SIDEBAR_WIDTH_MOBILE
+                  "--sidebar-width": SIDEBAR_WIDTH_MOBILE,
+                  ...(SIDEBAR_SCOPE_COLOR_OVERRIDE[scope] ?? {})
                 } as React.CSSProperties
               }
               side={side}
@@ -231,14 +249,19 @@ function Sidebar({
         >
           <div
             className={cn(
-              "flex h-full flex-col overflow-hidden border-r border-border bg-gradient-to-r to-transparent text-foreground transition-[width] duration-200 ease-linear",
+              "flex h-full flex-col overflow-hidden border-r border-border-soft bg-gradient-to-r to-transparent text-foreground transition-[width] duration-200 ease-linear in-data-[theme=light]:bg-none",
               state === "collapsed" ? "w-(--sidebar-width-icon)" : "w-(--sidebar-width)",
-              scope === "project" && "from-project/5",
+              (scope === "project" ||
+                scope === "pam" ||
+                scope === "agent-vault" ||
+                scope === "secret-scanning") &&
+                "from-project/5",
               scope === "sub-org" && "from-sub-org/5",
               scope === "org" && "from-org/5",
               scope === "admin" && "from-admin/5",
               className
             )}
+            style={SIDEBAR_SCOPE_COLOR_OVERRIDE[scope] as React.CSSProperties | undefined}
             {...props}
           >
             {children}
@@ -302,7 +325,7 @@ function Sidebar({
           data-slot="sidebar-container"
           data-side={side}
           className={cn(
-            "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) border-border transition-[left,right,width] duration-200 ease-linear data-[side=left]:left-0 data-[side=left]:group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] data-[side=right]:right-0 data-[side=right]:group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)] md:flex",
+            "fixed inset-y-0 z-[var(--z-index-sticky)] hidden h-svh w-(--sidebar-width) border-border-soft transition-[left,right,width] duration-200 ease-linear data-[side=left]:left-0 data-[side=left]:group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] data-[side=right]:right-0 data-[side=right]:group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)] md:flex",
             // Adjust the padding for floating and inset variants.
             variant === "floating" || variant === "inset"
               ? "p-2 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]"
@@ -376,7 +399,7 @@ function SidebarInset({ className, ...props }: React.ComponentProps<"main">) {
     <main
       data-slot="sidebar-inset"
       className={cn(
-        "relative flex w-full flex-1 flex-col bg-background md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm md:peer-data-[variant=inset]:peer-data-[state=collapsed]:ml-2",
+        "relative flex w-full flex-1 flex-col md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm md:peer-data-[variant=inset]:peer-data-[state=collapsed]:ml-2",
         className
       )}
       {...props}
@@ -422,7 +445,7 @@ function SidebarSeparator({ className, ...props }: React.ComponentProps<typeof S
     <Separator
       data-slot="sidebar-separator"
       data-sidebar="separator"
-      className={cn("mx-2 w-auto bg-sidebar-border", className)}
+      className={cn("mx-2 w-auto bg-border-soft", className)}
       {...props}
     />
   );
@@ -588,8 +611,7 @@ function SidebarCollapsibleGroup({
         expandedHeader
       )}
       <div
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        {...(!isCollapsed && !open ? { inert: "" as any } : {})}
+        inert={!isCollapsed && !open}
         className={cn(
           "grid transition-[grid-template-rows,opacity] duration-200 ease-in-out",
           isCollapsed || open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"
@@ -643,6 +665,9 @@ const sidebarMenuButtonVariants = cva(
         org: "data-active:border-l-org data-active:[&_svg]:text-org",
         "sub-org": "data-active:border-l-sub-org data-active:[&_svg]:text-sub-org",
         project: "data-active:border-l-project data-active:[&_svg]:text-project",
+        pam: "data-active:border-l-project data-active:[&_svg]:text-project",
+        "agent-vault": "data-active:border-l-project data-active:[&_svg]:text-project",
+        "secret-scanning": "data-active:border-l-project data-active:[&_svg]:text-project",
         admin: "data-active:border-l-admin data-active:[&_svg]:text-admin"
       }
     },
@@ -656,20 +681,23 @@ const sidebarMenuButtonVariants = cva(
 
 function SidebarMenuButton({
   asChild = false,
+  closeOnMobile = false,
   isActive = false,
   variant = "default",
   size = "default",
   scope: scopeProp,
   tooltip,
   className,
+  onClick,
   ...props
 }: React.ComponentProps<"button"> & {
   asChild?: boolean;
+  closeOnMobile?: boolean;
   isActive?: boolean;
   tooltip?: string | React.ComponentProps<typeof TooltipContent>;
 } & VariantProps<typeof sidebarMenuButtonVariants>) {
   const Comp = asChild ? Slot : "button";
-  const { isMobile, state } = useSidebar();
+  const { isMobile, setOpenMobile, state } = useSidebar();
   const contextScope = useSidebarScope();
   const scope = scopeProp ?? contextScope;
 
@@ -680,6 +708,12 @@ function SidebarMenuButton({
       data-size={size}
       data-active={isActive || undefined}
       className={cn(sidebarMenuButtonVariants({ variant, size, scope }), className)}
+      onClick={(event) => {
+        onClick?.(event);
+        if (closeOnMobile && isMobile) {
+          setOpenMobile(false);
+        }
+      }}
       {...props}
     />
   );
