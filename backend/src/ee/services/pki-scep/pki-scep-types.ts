@@ -19,6 +19,17 @@ export enum ScepPkiStatus {
   PENDING = "3"
 }
 
+export enum ScepEnrollmentStatus {
+  Success = "success",
+  Pending = "pending",
+  Failure = "failure"
+}
+
+export enum ScepIssuanceStatus {
+  Success = "success",
+  Pending = "pending"
+}
+
 export enum ScepFailInfo {
   BadAlg = "0",
   BadMessageCheck = "1",
@@ -34,6 +45,13 @@ export const SCEP_OIDS = {
   failInfo: "2.16.840.1.113733.1.9.4",
   senderNonce: "2.16.840.1.113733.1.9.5",
   recipientNonce: "2.16.840.1.113733.1.9.6"
+} as const;
+
+export const KEY_TRANSPORT_OIDS = {
+  rsaEncryption: "1.2.840.113549.1.1.1",
+  rsaesOaep: "1.2.840.113549.1.1.7",
+  mgf1: "1.2.840.113549.1.1.8",
+  pSpecified: "1.2.840.113549.1.1.9"
 } as const;
 
 export const DIGEST_OID_TO_HASH: Record<string, string> = {

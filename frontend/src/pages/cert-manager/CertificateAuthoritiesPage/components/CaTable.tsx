@@ -27,7 +27,6 @@ import {
   ProjectPermissionCertificateAuthorityActions,
   ProjectPermissionSub,
   useOrganization,
-  useProject,
   useProjectPermission
 } from "@app/context";
 import { CaStatus, CaType, useListCasByTypeAndProjectId } from "@app/hooks/api";
@@ -41,7 +40,7 @@ import { UsePopUpState } from "@app/hooks/usePopUp";
 
 type Props = {
   handlePopUpOpen: (
-    popUpName: keyof UsePopUpState<["installCaCert", "caCert", "ca", "deleteCa", "caStatus"]>,
+    popUpName: keyof UsePopUpState<["installCaCert", "caCert", "deleteCa", "caStatus"]>,
     data?: {
       caId?: string;
       caName?: string;
@@ -54,7 +53,6 @@ type Props = {
 export const CaTable = ({ handlePopUpOpen }: Props) => {
   const navigate = useNavigate();
   const { currentOrg } = useOrganization();
-  const { currentProject } = useProject();
   const { permission } = useProjectPermission();
   const { data, isPending } = useListCasByTypeAndProjectId(CaType.INTERNAL);
   const cas = data as TInternalCertificateAuthority[];
@@ -106,10 +104,9 @@ export const CaTable = ({ handlePopUpOpen }: Props) => {
               onClick={() =>
                 canReadCa &&
                 navigate({
-                  to: "/organizations/$orgId/projects/cert-manager/$projectId/ca/$caId",
+                  to: "/organizations/$orgId/cert-manager/ca/$caId",
                   params: {
                     orgId: currentOrg.id,
-                    projectId: currentProject.id,
                     caId: ca.id
                   }
                 })

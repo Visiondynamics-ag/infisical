@@ -3,23 +3,24 @@ import type { CellContext, ColumnDef, HeaderContext } from "@tanstack/react-tabl
 import { EyeIcon } from "lucide-react";
 
 import { createNotification } from "@app/components/notifications";
-import { ContentLoader } from "@app/components/v2";
 import { Alert, AlertDescription } from "@app/components/v3/generic/Alert";
 import { Checkbox } from "@app/components/v3/generic/Checkbox";
 import type { CellOpts } from "@app/components/v3/generic/DataGrid";
 import { DataGrid, useDataGrid } from "@app/components/v3/generic/DataGrid";
 import { Skeleton } from "@app/components/v3/generic/Skeleton";
+import { PageLoader } from "@app/components/v3/platform/PageLoader";
 
 import type { ColumnInfo, FieldInfo, ForeignKeyInfo, TableDetail } from "../data-explorer-types";
 import { getColumnIndicator } from "../data-explorer-utils";
 import { copyData, exportData } from "../data-export";
-import type { FilterCondition, SortCondition } from "../sql-generation";
+import type { FilterCondition, SortCondition, SqlDialect } from "../sql-generation";
 import {
   buildCountQuery,
   buildDeleteQuery,
   buildInsertQuery,
   buildSelectQuery,
   buildUpdateQuery,
+  supportsRowEditing,
   wrapInTransaction
 } from "../sql-generation";
 import { DataExplorerToolbar } from "./DataExplorerToolbar";
@@ -42,9 +43,18 @@ type DataExplorerGridProps = {
   }>;
   isLoading: boolean;
   onRefresh?: () => Promise<void>;
+  dialect: SqlDialect;
 };
 
 const ROW_KEY_PREFIX = "__new_";
+
+function readOnlyReason(dialect: SqlDialect, tableType?: string): string {
+  if (tableType === "view" || tableType === "materialized_view") return "This view is read-only.";
+  if (!supportsRowEditing(dialect)) {
+    return "This table is read-only. Edit it from the SQL editor.";
+  }
+  return "This table has no primary key. Browsing is read-only — editing requires a primary key.";
+}
 
 function cellValuesEqual(a: unknown, b: unknown): boolean {
   if (a === null && b === null) return true;
@@ -182,8 +192,16 @@ export const DataExplorerGrid = ({
   connectionId,
   executeQuery,
   isLoading,
-  onRefresh
+  onRefresh,
+  dialect
 }: DataExplorerGridProps) => {
+  const executeStatements = useCallback(
+    async (statements: string[]) => {
+      await executeQuery(connectionId, wrapInTransaction(statements));
+    },
+    [executeQuery, connectionId]
+  );
+
   const [originalData, setOriginalData] = useState<Record<string, unknown>[]>([]);
   const [currentData, setCurrentData] = useState<Record<string, unknown>[]>([]);
   const [totalCount, setTotalCount] = useState(0);
@@ -202,7 +220,7 @@ export const DataExplorerGrid = ({
   const primaryKeys = tableDetail?.primaryKeys ?? [];
   const foreignKeys = tableDetail?.foreignKeys ?? [];
   const tableColumns = tableDetail?.columns ?? [];
-  const hasPrimaryKey = primaryKeys.length > 0;
+  const canEditRows = primaryKeys.length > 0 && supportsRowEditing(dialect);
   const primaryKeysRef = useRef(primaryKeys);
   primaryKeysRef.current = primaryKeys;
 
@@ -215,10 +233,10 @@ export const DataExplorerGrid = ({
   // Build TanStack Table column definitions from PG metadata
   const columnDefs = useMemo(
     () =>
-      hasPrimaryKey
+      canEditRows
         ? [SELECT_COLUMN, ...buildColumnDefs(tableColumns, primaryKeys, foreignKeys)]
         : buildColumnDefs(tableColumns, primaryKeys, foreignKeys),
-    [hasPrimaryKey, tableColumns, primaryKeys, foreignKeys]
+    [canEditRows, tableColumns, primaryKeys, foreignKeys]
   );
 
   const fetchData = useCallback(
@@ -234,9 +252,10 @@ export const DataExplorerGrid = ({
           sorts: s,
           limit: ps,
           offset: o,
-          primaryKeys
+          primaryKeys,
+          dialect
         });
-        const countSql = buildCountQuery({ schema, table, filters: f });
+        const countSql = buildCountQuery({ schema, table, filters: f, dialect });
 
         // These two queries don't share a database snapshot (the backend processes them
         // sequentially, not in a single transaction), so the count could be off by 1 if
@@ -271,7 +290,7 @@ export const DataExplorerGrid = ({
         setIsDataLoading(false);
       }
     },
-    [tableDetail, schema, table, primaryKeys, executeQuery, connectionId]
+    [tableDetail, schema, table, primaryKeys, executeQuery, connectionId, dialect]
   );
 
   // Fetch data when filters/sorts/pagination change.
@@ -379,7 +398,12 @@ export const DataExplorerGrid = ({
           tempIdsToRemove.push(tempId);
         } else {
           deleteStatements.push(
-            buildDeleteQuery({ schema, table, primaryKeyMatch: getPkMatch(row, primaryKeys) })
+            buildDeleteQuery({
+              schema,
+              table,
+              primaryKeyMatch: getPkMatch(row, primaryKeys),
+              dialect
+            })
           );
         }
       });
@@ -400,8 +424,7 @@ export const DataExplorerGrid = ({
       // Execute DELETE SQL for persisted rows immediately
       if (deleteStatements.length > 0) {
         try {
-          const sql = wrapInTransaction(deleteStatements);
-          await executeQuery(connectionId, sql);
+          await executeStatements(deleteStatements);
           createNotification({
             text: `Deleted ${deleteStatements.length} row${deleteStatements.length !== 1 ? "s" : ""}`,
             type: "success"
@@ -424,8 +447,8 @@ export const DataExplorerGrid = ({
       primaryKeys,
       schema,
       table,
-      connectionId,
-      executeQuery,
+      dialect,
+      executeStatements,
       fetchData,
       offset,
       pageSize,
@@ -458,7 +481,7 @@ export const DataExplorerGrid = ({
             values[col.name] = row[col.name];
           }
         });
-        statements.push(buildInsertQuery({ schema, table, row: values }));
+        statements.push(buildInsertQuery({ schema, table, row: values, dialect }));
       });
 
       // Updates (changed rows) — use PK-based lookup so prepends don't misalign
@@ -480,7 +503,8 @@ export const DataExplorerGrid = ({
               schema,
               table,
               changes,
-              primaryKeyMatch: getPkMatch(original, primaryKeys)
+              primaryKeyMatch: getPkMatch(original, primaryKeys),
+              dialect
             })
           );
         }
@@ -492,12 +516,9 @@ export const DataExplorerGrid = ({
         return;
       }
 
-      const sql = wrapInTransaction(statements);
-
-      // The WebSocket maxPayload is 64 KB. Guard against sending a query
-      // that would exceed the limit and silently kill the connection.
+      const combined = statements.join(";\n");
       const MAX_QUERY_SIZE = 50 * 1024;
-      if (sql.length > MAX_QUERY_SIZE) {
+      if (combined.length > MAX_QUERY_SIZE) {
         createNotification({
           title: "Save failed",
           text: "Changes are too large to save at once. Try saving fewer or smaller changes.",
@@ -507,7 +528,7 @@ export const DataExplorerGrid = ({
         return;
       }
 
-      await executeQuery(connectionId, sql);
+      await executeStatements(statements);
       createNotification({
         text: `Saved ${statements.length} change${statements.length !== 1 ? "s" : ""}`,
         type: "success"
@@ -531,8 +552,8 @@ export const DataExplorerGrid = ({
     primaryKeys,
     schema,
     table,
-    connectionId,
-    executeQuery,
+    dialect,
+    executeStatements,
     fetchData,
     offset,
     pageSize,
@@ -587,11 +608,11 @@ export const DataExplorerGrid = ({
     columns: columnDefs,
     onDataChange: handleDataChange,
     getRowId,
-    readOnly: !hasPrimaryKey,
+    readOnly: !canEditRows,
     rowHeight: "short",
     enableSearch: true,
-    enablePaste: hasPrimaryKey,
-    onRowsDelete: hasPrimaryKey ? handleRowsDelete : undefined,
+    enablePaste: canEditRows,
+    onRowsDelete: canEditRows ? handleRowsDelete : undefined,
     onRowSelectionChange: (rowSelection) => {
       const selectedIds = new Set(Object.keys(rowSelection).filter((k) => rowSelection[k]));
       setSelectedRowCount(selectedIds.size);
@@ -622,7 +643,12 @@ export const DataExplorerGrid = ({
         tempIdsToRemove.push(tempId);
       } else {
         deleteStatements.push(
-          buildDeleteQuery({ schema, table, primaryKeyMatch: getPkMatch(row, primaryKeys) })
+          buildDeleteQuery({
+            schema,
+            table,
+            primaryKeyMatch: getPkMatch(row, primaryKeys),
+            dialect
+          })
         );
       }
     });
@@ -643,8 +669,7 @@ export const DataExplorerGrid = ({
     // Execute DELETE SQL for persisted rows
     if (deleteStatements.length > 0) {
       try {
-        const sql = wrapInTransaction(deleteStatements);
-        await executeQuery(connectionId, sql);
+        await executeStatements(deleteStatements);
         createNotification({
           text: `Deleted ${deleteStatements.length} row${deleteStatements.length !== 1 ? "s" : ""}`,
           type: "success"
@@ -669,8 +694,8 @@ export const DataExplorerGrid = ({
     schema,
     table,
     primaryKeys,
-    connectionId,
-    executeQuery,
+    dialect,
+    executeStatements,
     fetchData,
     offset,
     pageSize,
@@ -707,7 +732,7 @@ export const DataExplorerGrid = ({
         onOffsetChange={handleOffsetChange}
         onPageSizeChange={handlePageSizeChange}
         executionTimeMs={executionTimeMs}
-        hasPrimaryKey={hasPrimaryKey}
+        canEditRows={canEditRows}
         isDataLoading={isDataLoading}
         onRefresh={async () => {
           if (onRefresh) await onRefresh();
@@ -729,32 +754,29 @@ export const DataExplorerGrid = ({
           )
         }
         hasData={currentData.length > 0}
+        dialect={dialect}
       />
 
-      {!hasPrimaryKey && (
+      {!canEditRows && (
         <div className="shrink-0 px-3 py-3">
           <Alert variant="info" className="py-2">
             <EyeIcon />
-            <AlertDescription>
-              {tableType === "view" || tableType === "materialized_view"
-                ? "This view is read-only."
-                : "This table has no primary key. Browsing is read-only — editing requires a primary key."}
-            </AlertDescription>
+            <AlertDescription>{readOnlyReason(dialect, tableType)}</AlertDescription>
           </Alert>
         </div>
       )}
 
       {/* Dice UI DataGrid */}
-      <div className="data-explorer-grid relative flex min-h-0 flex-1 flex-col overflow-hidden font-mono text-foreground [--color-gray-200:var(--color-border)] [&_[data-slot=grid-footer]]:hidden [&_[data-slot=grid-header]]:bg-container [&_[data-slot=grid]]:thin-scrollbar [&_[data-slot=grid]]:rounded-none [&_[data-slot=grid]]:border-0 [&_[data-slot=grid]]:bg-bunker-800">
-        {isDataLoading && !hasLoaded && <ContentLoader className="h-full" />}
+      <div className="data-explorer-grid relative flex min-h-0 flex-1 flex-col overflow-hidden font-mono text-foreground [--color-gray-200:var(--color-border)] [&_[data-slot=grid-footer]]:hidden [&_[data-slot=grid-header]]:bg-container [&_[data-slot=grid]]:thin-scrollbar [&_[data-slot=grid]]:rounded-none [&_[data-slot=grid]]:border-0 [&_[data-slot=grid]]:bg-background">
+        {isDataLoading && !hasLoaded && <PageLoader />}
         <DataGrid
           {...gridProps}
           className={`min-h-0 flex-1 ${isDataLoading && !hasLoaded ? "hidden" : ""}`}
           stretchColumns
         />
         {isDataLoading && hasLoaded && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center bg-bunker-800/60">
-            <ContentLoader className="h-auto" lottieClassName="h-24 w-24" />
+          <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/60">
+            <PageLoader />
           </div>
         )}
       </div>

@@ -1,9 +1,14 @@
+import { BadRequestError } from "@app/lib/errors";
 import { logger } from "@app/lib/logger";
 import { OrgServiceActor } from "@app/lib/types";
 
 import { AppConnection } from "../app-connection-enums";
 import {
+  getCloudflareErrorMessage,
   listCloudflarePagesProjects,
+  listCloudflarePermissionGroups,
+  listCloudflareR2Buckets,
+  listCloudflareSecretsStores,
   listCloudflareWorkersScripts,
   listCloudflareZones
 } from "./cloudflare-connection-fns";
@@ -44,6 +49,22 @@ export const cloudflareConnectionService = (getAppConnection: TGetAppConnectionF
     }
   };
 
+  const listSecretsStores = async (connectionId: string, actor: OrgServiceActor) => {
+    const appConnection = await getAppConnection(AppConnection.Cloudflare, connectionId, actor);
+    try {
+      const stores = await listCloudflareSecretsStores(appConnection);
+      return stores;
+    } catch (error) {
+      logger.error(
+        error,
+        `Failed to list Cloudflare Secrets Stores for Cloudflare connection [connectionId=${connectionId}]`
+      );
+      throw new BadRequestError({
+        message: `Failed to list Cloudflare Secrets Stores: ${getCloudflareErrorMessage(error)}`
+      });
+    }
+  };
+
   const listZones = async (connectionId: string, actor: OrgServiceActor) => {
     const appConnection = await getAppConnection(AppConnection.Cloudflare, connectionId, actor);
     try {
@@ -55,9 +76,40 @@ export const cloudflareConnectionService = (getAppConnection: TGetAppConnectionF
     }
   };
 
+  const listPermissionGroups = async (connectionId: string, actor: OrgServiceActor) => {
+    const appConnection = await getAppConnection(AppConnection.Cloudflare, connectionId, actor);
+    try {
+      const permissionGroups = await listCloudflarePermissionGroups(appConnection);
+      return permissionGroups;
+    } catch (error) {
+      logger.error(
+        error,
+        `Failed to list Cloudflare permission groups for Cloudflare connection [connectionId=${connectionId}]`
+      );
+      return [];
+    }
+  };
+
+  const listR2Buckets = async (connectionId: string, actor: OrgServiceActor) => {
+    const appConnection = await getAppConnection(AppConnection.Cloudflare, connectionId, actor);
+    try {
+      const buckets = await listCloudflareR2Buckets(appConnection);
+      return buckets;
+    } catch (error) {
+      logger.error(
+        error,
+        `Failed to list Cloudflare R2 buckets for Cloudflare connection [connectionId=${connectionId}]`
+      );
+      return [];
+    }
+  };
+
   return {
     listPagesProjects,
     listWorkersScripts,
-    listZones
+    listSecretsStores,
+    listZones,
+    listPermissionGroups,
+    listR2Buckets
   };
 };

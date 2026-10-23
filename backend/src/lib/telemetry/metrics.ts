@@ -10,6 +10,7 @@ import type { Knex } from "knex";
 
 import { classifyError } from "@app/lib/errors/classify";
 import { RequestContextKey } from "@app/lib/request-context/request-context-keys";
+import { getAgentPoolStats } from "@app/lib/validator/agent-pool";
 
 import { getConfig } from "../config/env";
 
@@ -29,9 +30,24 @@ const resolveMeter = (meterName: string): Meter => {
   return meter;
 };
 
+export const resolveCoreMeter = (): Meter => resolveMeter("InfisicalCore");
+
 type LazyMeter = {
   createCounter: (name: string, options?: MetricOptions) => Counter;
   createHistogram: (name: string, options?: MetricOptions) => Histogram;
+};
+
+// Recording is fire-and-forget: a measurement is an observation of the work, never a step in it, so
+// nothing here may throw into a call site. The SDK can raise on a malformed instrument name or a
+// broken exporter, and getConfig() is empty until initEnvConfig() runs, which is reachable from
+// anything recording during boot. Swallowing is silent on purpose — the logger is itself initialised
+// from config, so reporting the failure here risks throwing a second time from the handler.
+const safely = (record: () => void) => {
+  try {
+    record();
+  } catch {
+    // metrics must never break the path they observe
+  }
 };
 
 // Returns instrument wrappers whose underlying instrument is created on first use (after init), so it
@@ -41,8 +57,10 @@ const lazyMeter = (meterName: string): LazyMeter => ({
     let instrument: Counter | undefined;
     return {
       add: (value: number, attributes?: Attributes) => {
-        if (!instrument) instrument = resolveMeter(meterName).createCounter(name, options);
-        instrument.add(value, attributes);
+        safely(() => {
+          if (!instrument) instrument = resolveMeter(meterName).createCounter(name, options);
+          instrument.add(value, attributes);
+        });
       }
     } as Counter;
   },
@@ -50,17 +68,52 @@ const lazyMeter = (meterName: string): LazyMeter => ({
     let instrument: Histogram | undefined;
     return {
       record: (value: number, attributes?: Attributes) => {
-        if (!instrument) instrument = resolveMeter(meterName).createHistogram(name, options);
-        instrument.record(value, attributes);
+        safely(() => {
+          if (!instrument) instrument = resolveMeter(meterName).createHistogram(name, options);
+          instrument.record(value, attributes);
+        });
       }
     } as Histogram;
   }
 });
 
+// Exported so a call site can skip work it would only do to produce a measurement (an extra query,
+// a serialization, a size computation). Recording is already gated internally, so this is never
+// needed to make a record*Metric call safe.
+export const isTelemetryEnabled = () => Boolean(getConfig()?.OTEL_TELEMETRY_COLLECTION_ENABLED);
+
+export const shouldRecordHighCardinalityMetrics = () =>
+  isTelemetryEnabled() && !getConfig()?.OTEL_DROP_HIGH_CARDINALITY_METERS;
+
+export const highCardinalityMeter = (meterName: string): LazyMeter => {
+  const meter = lazyMeter(meterName);
+
+  return {
+    createCounter: (name, options) => {
+      const counter = meter.createCounter(name, options);
+      return {
+        add: (value: number, attributes?: Attributes) => {
+          if (!shouldRecordHighCardinalityMetrics()) return;
+          counter.add(value, attributes);
+        }
+      } as Counter;
+    },
+    createHistogram: (name, options) => {
+      const histogram = meter.createHistogram(name, options);
+      return {
+        record: (value: number, attributes?: Attributes) => {
+          if (!shouldRecordHighCardinalityMetrics()) return;
+          histogram.record(value, attributes);
+        }
+      } as Histogram;
+    }
+  };
+};
+
 // High-cardinality, per-actor meter, kept on by default for self-hosted (where per-actor visibility is
 // useful and cardinality is bounded by a single org); dropped in multi-tenant/cloud via
 // OTEL_DROP_HIGH_CARDINALITY_METERS. The pre-existing metrics below ship with per-actor labels documented in the docs.
-const infisicalMeter = lazyMeter("Infisical");
+const infisicalMeter = highCardinalityMeter("Infisical");
 
 // The MeterProvider applies a strict attribute allowlist (View in
 // instrumentation.ts) to anything emitted here, dropping high-cardinality labels at the SDK level.
@@ -107,9 +160,7 @@ export const secretReadCounter = infisicalMeter.createCounter("infisical.secret.
 });
 
 export const recordSecretReadMetric = (params: { environment: string; secretPath: string; name?: string }) => {
-  const appCfg = getConfig();
-
-  if (appCfg.OTEL_TELEMETRY_COLLECTION_ENABLED) {
+  if (shouldRecordHighCardinalityMetrics()) {
     const attributes: Record<string, string> = {
       "infisical.environment": params.environment,
       "infisical.secret.path": params.secretPath,
@@ -188,9 +239,7 @@ export const recordKmipOperationMetric = (params: {
   objectId?: string;
   objectName?: string;
 }) => {
-  const appCfg = getConfig();
-
-  if (appCfg.OTEL_TELEMETRY_COLLECTION_ENABLED) {
+  if (shouldRecordHighCardinalityMetrics()) {
     const attributes: Record<string, string> = {
       "infisical.kmip.operation.type": params.operationType,
       "infisical.organization.id": params.orgId,
@@ -230,22 +279,6 @@ export const recordKmipOperationMetric = (params: {
 
 // -- New low-cardinality instruments (InfisicalCore meter) ------------------------------------------
 
-const isTelemetryEnabled = () => getConfig().OTEL_TELEMETRY_COLLECTION_ENABLED;
-
-/**
- * Pull only the keys that survive the InfisicalCore View allowlist (see instrumentation.ts):
- * organization.id. Returns an empty object when no request context is
- * available (e.g. queue workers / cron handlers) — those call sites pass their own tenant labels.
- */
-export const buildBaseAttributes = (): Record<string, string> => {
-  const attributes: Record<string, string> = {};
-
-  const orgId = requestContext.get(RequestContextKey.OrgId);
-  if (orgId) attributes["infisical.organization.id"] = orgId;
-
-  return attributes;
-};
-
 // Queue worker lifecycle metrics. Wired in queue-service.ts via worker.on('completed' | 'failed' | 'stalled').
 export const queueJobCounter = infisicalCoreMeter.createCounter("infisical.queue.job.count", {
   description: "Queue jobs processed by outcome (completed or failed)",
@@ -275,6 +308,54 @@ export const queueStalledCounter = infisicalCoreMeter.createCounter("infisical.q
     "Stalled queue jobs (lock expired without completing). Strongest signal of a stuck worker / OOM / network partition.",
   unit: "{job}"
 });
+
+// In-process refresh metrics. Wired in lib/cron/local-refresh.ts around every run. Each pod runs its own
+// copy, so a failure here means that pod is serving stale in-memory state, not that a fleet job was lost.
+export enum LocalRefreshOutcome {
+  COMPLETED = "completed",
+  FAILED = "failed",
+  SKIPPED = "skipped"
+}
+
+export const localRefreshRunCounter = infisicalCoreMeter.createCounter("infisical.local_refresh.run.count", {
+  description:
+    "In-process refresh runs by job and outcome. skipped means the previous run was still in progress when the next tick fired.",
+  unit: "{run}"
+});
+
+export const localRefreshRunDurationHistogram = infisicalCoreMeter.createHistogram(
+  "infisical.local_refresh.run.duration",
+  {
+    description: "In-process refresh run duration by job and outcome. Not recorded for skipped runs.",
+    unit: "s"
+  }
+);
+
+// Read by the infisical.local_refresh.consecutive_failures gauge in registerInfrastructureMetrics().
+const localRefreshConsecutiveFailures = new Map<string, number>();
+
+export const recordLocalRefreshRunMetric = (params: {
+  name: string;
+  outcome: LocalRefreshOutcome;
+  durationMs?: number;
+  error?: unknown;
+  consecutiveFailures?: number;
+}) => {
+  safely(() => {
+    if (params.consecutiveFailures !== undefined) {
+      localRefreshConsecutiveFailures.set(params.name, params.consecutiveFailures);
+    }
+    if (!isTelemetryEnabled()) return;
+    const attributes: Record<string, string> = { "job.name": params.name, outcome: params.outcome };
+    if (params.durationMs !== undefined) {
+      localRefreshRunDurationHistogram.record(params.durationMs / 1000, attributes);
+    }
+    if (params.outcome === LocalRefreshOutcome.FAILED) {
+      attributes["error.type"] = classifyError(params.error);
+    }
+    localRefreshRunCounter.add(1, attributes);
+  });
+};
 
 // Audit log lifecycle metrics. Wired in audit-log-queue.ts: enqueued when an event is appended to
 // the Redis ingest stream, dropped when the request-path push fails, persist duration around the
@@ -342,8 +423,14 @@ export enum SecretCacheAccessResult {
   MISS = "miss"
 }
 
+// What the server observed when an If-None-Match request did not 304 (cause is inferred downstream).
+export enum SecretEtagMissReason {
+  FIELD_ABSENT = "field_absent", // no stored ETag for this (actor, fingerprint, params) key
+  VALUE_DIFFERS = "value_differs" // a stored ETag exists but differs from the client's If-None-Match
+}
+
 export const secretCacheAccessCounter = infisicalCoreMeter.createCounter("infisical.secret.cache.access.count", {
-  description: "Secret service-layer cache accesses by outcome (304 not-modified / hit / miss)",
+  description: "Secret cache accesses, labeled by result, whether If-None-Match was sent, and why it missed the 304.",
   unit: "{access}"
 });
 
@@ -360,18 +447,40 @@ export const secretCacheOversizeSkipCounter = infisicalCoreMeter.createCounter(
   }
 );
 
-export const recordSecretCacheAccessMetric = (result: SecretCacheAccessResult) => {
+export const recordSecretCacheAccessMetric = (
+  result: SecretCacheAccessResult,
+  opts?: { hasIfNoneMatch?: boolean; etagMissReason?: SecretEtagMissReason }
+) => {
   if (!isTelemetryEnabled()) return;
-  secretCacheAccessCounter.add(1, { ...buildBaseAttributes(), "cache.result": result });
+  const attributes: Record<string, string> = { "cache.result": result };
+  if (opts?.hasIfNoneMatch !== undefined) attributes["cache.if_none_match"] = opts.hasIfNoneMatch ? "true" : "false";
+  if (opts?.etagMissReason) attributes["cache.etag_miss_reason"] = opts.etagMissReason;
+  secretCacheAccessCounter.add(1, attributes);
 };
 
 export const recordSecretCacheWriteMetric = (params: { bytes: number; stored: boolean }) => {
   if (!isTelemetryEnabled()) return;
-  const attributes = buildBaseAttributes();
-  secretCacheEntryBytesHistogram.record(params.bytes, attributes);
+  secretCacheEntryBytesHistogram.record(params.bytes);
   if (!params.stored) {
-    secretCacheOversizeSkipCounter.add(1, attributes);
+    secretCacheOversizeSkipCounter.add(1);
   }
+};
+
+// -- safeRequest HTTPS agent pool (InfisicalCore meter) ----------------------------------------
+// The pool is bounded, so a 201st distinct TLS signature costs the least recently used entry its
+// connection. Non-zero for a sustained window means the cap is too low and should be raised.
+export const safeRequestAgentEvictionCounter = infisicalCoreMeter.createCounter(
+  "infisical.safe_request.agent_eviction.count",
+  {
+    description:
+      "Agents evicted from the safeRequest connection pool because it was at capacity. Non-zero for a sustained window means raise AGENT_CACHE_MAX.",
+    unit: "{eviction}"
+  }
+);
+
+export const recordSafeRequestAgentEvictionMetric = () => {
+  if (!isTelemetryEnabled()) return;
+  safeRequestAgentEvictionCounter.add(1);
 };
 
 export const coreHttpErrorCounter = infisicalCoreMeter.createCounter("infisical.core.http.error.count", {
@@ -379,38 +488,82 @@ export const coreHttpErrorCounter = infisicalCoreMeter.createCounter("infisical.
   unit: "{error}"
 });
 
+// Denominator for coreHttpErrorCounter so error rate per route survives OTEL_DROP_HIGH_CARDINALITY_METERS.
+// normalizeHttpMethod mirrors @opentelemetry/instrumentation-http KNOWN_METHODS (_OTHER for the rest) for joinable labels.
+const KNOWN_HTTP_METHODS = new Set([
+  "GET",
+  "HEAD",
+  "POST",
+  "PUT",
+  "DELETE",
+  "CONNECT",
+  "OPTIONS",
+  "TRACE",
+  "PATCH",
+  "QUERY"
+]);
+
+export const normalizeHttpMethod = (method?: string): string => {
+  if (!method) return "GET";
+  const upper = method.toUpperCase();
+  return KNOWN_HTTP_METHODS.has(upper) ? upper : "_OTHER";
+};
+
+export const coreHttpRequestCounter = infisicalCoreMeter.createCounter("infisical.core.http.request.count", {
+  description: "API requests with bounded labels. Labels limited to InfisicalCore View allowlist.",
+  unit: "{request}"
+});
+
+// -- Signup abuse (InfisicalCore meter) -------------------------------------------------------------
+
+export enum EmailDispatchPurpose {
+  SIGNUP = "signup",
+  ACCOUNT_RECOVERY = "account-recovery"
+}
+
+export enum EmailDispatchMailboxProvider {
+  GOOGLE = "google",
+  OTHER = "other"
+}
+
+export enum EmailDispatchAddressForm {
+  CANONICAL = "canonical",
+  ALIASED = "aliased"
+}
+
+export enum EmailDispatchOutcome {
+  SENT = "sent",
+  EXISTING_ACCOUNT = "existing-account",
+  NO_RECIPIENT = "no-recipient",
+  MAILBOX_CAPPED = "mailbox-capped",
+  CAPTCHA_REJECTED = "captcha-rejected"
+}
+
+export enum EmailDispatchDimension {
+  SOURCE = "source",
+  MAILBOX = "mailbox"
+}
+
+export const emailDispatchRequestCounter = infisicalCoreMeter.createCounter("infisical.email_dispatch.request.count", {
+  description:
+    "Requests to the unauthenticated endpoints that mail a caller-chosen address, by purpose, mailbox provider, address form, and outcome.",
+  unit: "{request}"
+});
+
+export const emailDispatchDistinctCounter = infisicalCoreMeter.createCounter(
+  "infisical.email_dispatch.distinct.count",
+  {
+    description:
+      "First sighting of a source host or target mailbox within the current abuse window. Compare against the request count to separate a broad campaign from a burst against a few targets.",
+    unit: "{entity}"
+  }
+);
+
 // Rate limit metric. Wired in error-handler.ts on RateLimitError.
 export const rateLimitExceededCounter = infisicalCoreMeter.createCounter("infisical.rate_limit.exceeded.count", {
   description: "HTTP 429 responses (rate limit exceeded).",
   unit: "{request}"
 });
-
-// -- License Server v2 dual-read (InfisicalCore meter) ----------------------------------------------
-export const licenseDualReadDiffCounter = infisicalCoreMeter.createCounter("infisical.license.dual_read.diff.count", {
-  description:
-    "v1 vs License Server v2 entitlement comparison results, by feature and kind (mismatch/v2_missing/v1_absent/indeterminate). Match results are not counted.",
-  unit: "{result}"
-});
-
-export const licenseDualReadErrorCounter = infisicalCoreMeter.createCounter("infisical.license.dual_read.error.count", {
-  description: "Failures resolving the v2 entitlement set during dual-read comparison, by error type.",
-  unit: "{error}"
-});
-
-export const recordLicenseDualReadDiff = (params: { feature: string; kind: string }) => {
-  if (!isTelemetryEnabled()) return;
-  licenseDualReadDiffCounter.add(1, {
-    "license.feature": params.feature,
-    "license.dual_read.kind": params.kind
-  });
-};
-
-export const recordLicenseDualReadError = (params: { error?: unknown }) => {
-  if (!isTelemetryEnabled()) return;
-  const attributes: Record<string, string> = {};
-  if (params.error !== undefined) attributes["error.type"] = classifyError(params.error);
-  licenseDualReadErrorCounter.add(1, attributes);
-};
 
 // -- Authentication latency (InfisicalCore meter) ---------------------------------------------------
 export const authAttemptDurationHistogram = infisicalCoreMeter.createHistogram("infisical.auth.attempt.duration", {
@@ -432,7 +585,6 @@ export const recordAuthAttemptMetric = (params: {
     "infisical.auth.result": params.result
   };
   if (params.error !== undefined) attributes["error.type"] = classifyError(params.error);
-  if (params.orgId) attributes["infisical.organization.id"] = params.orgId;
   authAttemptDurationHistogram.record((performance.now() - params.startTime) / 1000, attributes);
 };
 
@@ -483,7 +635,6 @@ export const recordScimOperationMetric = (params: {
     "scim.operation": params.operation,
     outcome: params.outcome
   };
-  if (params.orgId) attributes["infisical.organization.id"] = params.orgId;
   if (params.error !== undefined) attributes["error.type"] = classifyError(params.error);
   scimOperationDurationHistogram.record((performance.now() - params.startTime) / 1000, attributes);
 };
@@ -515,16 +666,235 @@ export const recordSsoConfigChangeMetric = (params: {
     "sso.provider": params.provider,
     "sso.action": params.action
   };
-  if (params.orgId) attributes["infisical.organization.id"] = params.orgId;
   ssoConfigChangeCounter.add(1, attributes);
 };
+
+// -- Secret operation metrics (InfisicalCore meter) ------------------------------------------------
+export const secretOperationDurationHistogram = infisicalCoreMeter.createHistogram(
+  "infisical.secret.operation.duration",
+  {
+    description: "Secret operation latency by operation type, outcome, and environment.",
+    unit: "ms"
+  }
+);
+
+export const secretWriteCounter = infisicalCoreMeter.createCounter("infisical.secret.write.count", {
+  description: "Secret write operations (create/update/delete).",
+  unit: "{operation}"
+});
+
+export const recordSecretOperationDuration = (params: {
+  startTime: number;
+  operation: "read" | "write";
+  outcome: "success" | "failure";
+}) => {
+  if (!isTelemetryEnabled()) return;
+  secretOperationDurationHistogram.record(performance.now() - params.startTime, {
+    operation: params.operation,
+    outcome: params.outcome
+  });
+};
+
+export const recordSecretWriteMetric = (params: { operation: "create" | "update" | "delete" }) => {
+  if (!isTelemetryEnabled()) return;
+  secretWriteCounter.add(1, {
+    operation: params.operation
+  });
+};
+
+// -- Secret sync outcome (InfisicalCore meter) ----------------------------------------------------
+export const secretSyncOutcomeCounter = infisicalCoreMeter.createCounter("infisical.secret_sync.outcome.count", {
+  description:
+    "Secret sync attempts by destination, operation, and outcome. Alert on failure ratio > 50% over 15m with >= 10 attempts, grouped by destination.",
+  unit: "{attempt}"
+});
+
+export const recordSecretSyncOutcomeMetric = (params: {
+  destination: string;
+  operation: "sync" | "import" | "remove";
+  outcome: "success" | "failure";
+  attemptsExhausted: boolean;
+}) => {
+  if (!isTelemetryEnabled()) return;
+  secretSyncOutcomeCounter.add(1, {
+    destination: params.destination,
+    operation: params.operation,
+    outcome: params.outcome,
+    "attempts.exhausted": String(params.attemptsExhausted)
+  });
+};
+
+// -- Secret rotation outcome (InfisicalCore meter) --------------------------------------------------
+export const secretRotationOutcomeCounter = infisicalCoreMeter.createCounter(
+  "infisical.secret_rotation.outcome.count",
+  {
+    description:
+      "Secret rotation attempts by type and outcome. Alert on failure ratio > 50% per type with >= 5 total rotations.",
+    unit: "{attempt}"
+  }
+);
+
+export const recordSecretRotationOutcomeMetric = (params: { type: string; outcome: "success" | "failure" }) => {
+  if (!isTelemetryEnabled()) return;
+  secretRotationOutcomeCounter.add(1, {
+    type: params.type,
+    outcome: params.outcome
+  });
+};
+
+// -- Dynamic secret orphaned lease (InfisicalCore meter) ---------------------------------------------
+export const dynamicSecretOrphanedLeaseCounter = infisicalCoreMeter.createCounter(
+  "infisical.dynamic_secret.orphaned_lease.count",
+  {
+    description: "Dynamic secret lease revocation failures by provider. Alert on any value > 0 sustained 60m.",
+    unit: "{failure}"
+  }
+);
+
+export const recordDynamicSecretOrphanedLeaseMetric = (params: { provider: string }) => {
+  if (!isTelemetryEnabled()) return;
+  dynamicSecretOrphanedLeaseCounter.add(1, {
+    provider: params.provider
+  });
+};
+
+export enum AlertDispatchOutcome {
+  // Every channel the run touched delivered.
+  DeliverySuccess = "delivery_success",
+  // Some channels delivered and at least one did not, so a notification was dropped on the failed
+  // channels only. Dedup is per (channel, target), so the next run retries just those channels.
+  DeliveryPartial = "delivery_partial",
+  // No channel delivered: the whole run dropped.
+  DeliveryFailed = "delivery_failed",
+  // The alert row is gone by the time the job runs: deleted, or its project soft-deleted.
+  AlertNotFound = "alert_not_found",
+  // The alert still exists but was disabled between being enqueued and the job running.
+  AlertDisabled = "alert_disabled",
+  // No provider registered for the alert's resource type (misconfiguration).
+  NoProvider = "no_provider",
+  // Nothing to alert on: nothing matched the condition, or the targets an event named are gone.
+  NoDueTargets = "no_due_targets",
+  // The alert has no enabled channels, so the run is skipped before scanning for targets.
+  NoChannels = "no_channels",
+  // Every channel in the run was directed (email) with no resolvable recipient — the recipients left
+  // the org, or the recipient group emptied out. Customer config drift, not a delivery fault, so it
+  // is kept out of delivery_failed and must not alarm.
+  NoRecipients = "no_recipients",
+  // Targets matched, but every one had already been alerted inside the dedup window.
+  AllDeduped = "all_deduped",
+  // Event path only: no alert configured for the event. Normal in steady state.
+  NoMatchingAlert = "no_matching_alert"
+}
+
+export const alertDispatchOutcomeCounter = infisicalCoreMeter.createCounter("infisical.alert.dispatch.outcome.count", {
+  description:
+    "Alert dispatch jobs by alert resource type and outcome. Alarm on delivery_failed + delivery_partial: both mean a channel could not be reached, so a notification was dropped. Watch the delivery_* share of total separately: a persistently low ratio means the cron is enqueueing mostly no-op jobs and should pre-filter instead.",
+  unit: "{job}"
+});
+
+export const recordAlertDispatchOutcomeMetric = (params: { resourceType: string; outcome: AlertDispatchOutcome }) => {
+  if (!isTelemetryEnabled()) return;
+  alertDispatchOutcomeCounter.add(1, {
+    type: params.resourceType,
+    outcome: params.outcome
+  });
+};
+
+// -- Event outbox (InfisicalCore meter) --------------------------------------------------------------
+// Outbox health, not what consumers do with events. The main canary is the oldest-pending-age gauge
+// in event-outbox-queue.ts, fed by the relay tick.
+
+export const eventOutboxLagHistogram = infisicalCoreMeter.createHistogram("infisical.event_outbox.lag", {
+  description:
+    "Seconds from an event occurring to the outbox reaching a terminal result for it. Tracks the relay interval plus delivery time; a p99 far above the interval means delivery, not discovery, is the bottleneck.",
+  unit: "s"
+});
+
+export const recordEventOutboxLagMetric = (params: { consumer: string; status: string; seconds: number }) =>
+  safely(() => {
+    if (!isTelemetryEnabled()) return;
+    eventOutboxLagHistogram.record(params.seconds, {
+      "event_outbox.consumer": params.consumer,
+      "event_outbox.status": params.status
+    });
+  });
+
+export const eventOutboxExhaustedCounter = infisicalCoreMeter.createCounter("infisical.event_outbox.exhausted.count", {
+  description:
+    "Outbox events abandoned after exhausting their attempts. Every one of these is a notification the customer configured and did not receive, so alarm on any sustained rate.",
+  unit: "{event}"
+});
+
+export const recordEventOutboxExhaustedMetric = (params: { consumer: string; count: number }) =>
+  safely(() => {
+    if (!isTelemetryEnabled()) return;
+    eventOutboxExhaustedCounter.add(params.count, { "event_outbox.consumer": params.consumer });
+  });
+
+export enum ProductAnalyticsDropReason {
+  Retention = "retention",
+  Unparseable = "unparseable"
+}
+
+export const productAnalyticsPublishedCounter = infisicalCoreMeter.createCounter(
+  "infisical.product_analytics.published.count",
+  {
+    description: "Buffered product analytics events drained from Redis and published to PostHog, by event type.",
+    unit: "{event}"
+  }
+);
+
+export const productAnalyticsDroppedCounter = infisicalCoreMeter.createCounter(
+  "infisical.product_analytics.dropped.count",
+  {
+    description:
+      "Buffered product analytics events dropped before reaching PostHog, by event type and reason. Occasional retention drops are tolerable; a sustained rate means the drain is not keeping up and the limits need tweaking.",
+    unit: "{event}"
+  }
+);
+
+export const productAnalyticsBacklogHistogram = infisicalCoreMeter.createHistogram(
+  "infisical.product_analytics.shard.backlog",
+  {
+    description:
+      "Entries left in a shard after its drain, by event type. Zero on a healthy run: a backlog that persists across runs is what precedes retention drops and, near the 100k MAXLEN, silent write-path eviction.",
+    unit: "{entry}"
+  }
+);
+
+export const recordProductAnalyticsPublishedMetric = (params: { eventType: string; count: number }) =>
+  safely(() => {
+    if (!isTelemetryEnabled() || params.count === 0) return;
+    productAnalyticsPublishedCounter.add(params.count, { "product_analytics.event_type": params.eventType });
+  });
+
+export const recordProductAnalyticsDroppedMetric = (params: {
+  eventType: string;
+  reason: ProductAnalyticsDropReason;
+  count: number;
+}) =>
+  safely(() => {
+    if (!isTelemetryEnabled() || params.count === 0) return;
+    productAnalyticsDroppedCounter.add(params.count, {
+      "product_analytics.event_type": params.eventType,
+      "product_analytics.drop_reason": params.reason
+    });
+  });
+
+export const recordProductAnalyticsBacklogMetric = (params: { eventType: string; backlog: number }) =>
+  safely(() => {
+    if (!isTelemetryEnabled()) return;
+    productAnalyticsBacklogHistogram.record(params.backlog, {
+      "product_analytics.event_type": params.eventType
+    });
+  });
 
 // -- Boot-time observable gauges (InfisicalCore meter) ----------------------------------------------
 // Registered once at boot from main.ts with the primary Knex instance. Runs AFTER setupTelemetry() has
 // installed the real MeterProvider, so we resolve the real meter directly here (observable gauges can't
 // be deferred to first use like counters/histograms — the SDK pulls them on each export).
 export const registerInfrastructureMetrics = (db: Knex) => {
-  const meter = resolveMeter("InfisicalCore");
+  const meter = resolveCoreMeter();
 
   // Build info: constant-value gauge that emits 1 with build identification labels on every export.
   const buildInfoGauge = meter.createObservableGauge("infisical.build.info", {
@@ -562,5 +932,99 @@ export const registerInfrastructureMetrics = (db: Knex) => {
     result.observe(pool.numUsed?.() ?? 0, { "db.pool.state": "used" });
     result.observe(pool.numFree?.() ?? 0, { "db.pool.state": "free" });
     result.observe(pool.numPendingAcquires?.() ?? 0, { "db.pool.state": "pending" });
+  });
+
+  // safeRequest agent pool: an in-memory Map size, so it's cheap to observe on every export.
+  // Read alongside infisical.safe_request.agent_eviction.count — size pinned at max with a
+  // non-zero eviction rate is the signal that the cap is too low.
+  const agentPoolGauge = meter.createObservableGauge("infisical.safe_request.agent_pool.size", {
+    description: "Agents currently held in the safeRequest connection pool.",
+    unit: "{agent}"
+  });
+
+  agentPoolGauge.addCallback((result) => {
+    if (!isTelemetryEnabled()) return;
+    const { size, max } = getAgentPoolStats();
+    result.observe(size, { "pool.max": String(max) });
+  });
+
+  // Resets to 0 on the next successful run, so a sustained non-zero value means the refresh is stuck
+  // failing rather than flaking. Alert on this instead of on the failure rate.
+  const localRefreshFailuresGauge = meter.createObservableGauge("infisical.local_refresh.consecutive_failures", {
+    description: "Consecutive failed runs of each in-process refresh on this pod. Resets to 0 on success.",
+    unit: "{run}"
+  });
+
+  localRefreshFailuresGauge.addCallback((result) => {
+    if (!isTelemetryEnabled()) return;
+    localRefreshConsecutiveFailures.forEach((count, name) => {
+      result.observe(count, { "job.name": name });
+    });
+  });
+};
+
+// -- Legacy root-key usage (InfisicalCore meter) -----------------------------------------------------
+// The pre-KMS tier pins the instance root encryption key, so it can never be rotated while anything
+// still uses it. This counter is the evidence for when that tier can be deleted.
+export const legacyRootKeyUsageCounter = infisicalCoreMeter.createCounter("infisical.legacy_root_key.usage", {
+  description:
+    "Reads and writes that still use the instance root encryption key directly instead of the KMS envelope, by surface."
+});
+
+export type LegacyRootKeySurface =
+  | "project_bot"
+  | "user_private_key"
+  | "blind_index"
+  | "external_migration"
+  | "org_bot"
+  | "project_ghost_user";
+
+export const recordLegacyRootKeyUsageMetric = (params: {
+  operation: "encrypt" | "decrypt";
+  surface: LegacyRootKeySurface;
+}) => {
+  safely(() => {
+    if (!isTelemetryEnabled()) return;
+    legacyRootKeyUsageCounter.add(1, {
+      "legacy_key.operation": params.operation,
+      "legacy_key.surface": params.surface
+    });
+  });
+};
+
+export type TOcspStatusLabel = "successful" | "malformed_request" | "internal_error" | "try_later" | "unauthorized";
+
+export type TOcspCertStatusLabel = "good" | "revoked" | "unknown" | "none";
+
+export const ocspResponseCounter = infisicalCoreMeter.createCounter("infisical.ocsp.response.count", {
+  description:
+    "OCSP responses by response status, certificate status and cache outcome. cert_status is 'none' when the response carries no certificate status, which is every status other than successful. A rising try_later means the signing budget is saturated.",
+  unit: "{response}"
+});
+
+export const ocspSigningDurationHistogram = infisicalCoreMeter.createHistogram("infisical.ocsp.signing.duration", {
+  description: "Time spent resolving status and signing a fresh OCSP response, excluding cache hits.",
+  unit: "ms"
+});
+
+export const recordOcspResponseMetric = (params: {
+  status: TOcspStatusLabel;
+  certStatus: TOcspCertStatusLabel;
+  cache: "hit" | "miss" | "skipped" | "coalesced";
+}) => {
+  safely(() => {
+    if (!isTelemetryEnabled()) return;
+    ocspResponseCounter.add(1, {
+      "ocsp.status": params.status,
+      "ocsp.cert_status": params.certStatus,
+      "ocsp.cache": params.cache
+    });
+  });
+};
+
+export const recordOcspSigningDurationMetric = (params: { durationMs: number }) => {
+  safely(() => {
+    if (!isTelemetryEnabled()) return;
+    ocspSigningDurationHistogram.record(params.durationMs);
   });
 };

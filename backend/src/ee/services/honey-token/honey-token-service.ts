@@ -26,6 +26,7 @@ import { TResourceMetadataDALFactory } from "@app/services/resource-metadata/res
 import { TSecretQueueFactory } from "@app/services/secret/secret-queue";
 import { TSecretFolderDALFactory } from "@app/services/secret-folder/secret-folder-dal";
 import { TSecretTagDALFactory } from "@app/services/secret-tag/secret-tag-dal";
+import { createSecretBlindIndexer } from "@app/services/secret-v2-bridge/secret-blind-index-fns";
 import { TSecretV2BridgeDALFactory } from "@app/services/secret-v2-bridge/secret-v2-bridge-dal";
 import { fnSecretBulkDelete, fnSecretBulkInsert } from "@app/services/secret-v2-bridge/secret-v2-bridge-fns";
 import { TSecretVersionV2DALFactory } from "@app/services/secret-v2-bridge/secret-version-dal";
@@ -42,7 +43,6 @@ import { THoneyTokenConfigDALFactory } from "../honey-token-config/honey-token-c
 import { HoneyTokenConfigStatus } from "../honey-token-config/honey-token-config-enums";
 import { TLicenseServiceFactory } from "../license/license-service";
 import { TPermissionServiceFactory } from "../permission/permission-service-types";
-import { TSecretSnapshotServiceFactory } from "../secret-snapshot/secret-snapshot-service";
 import { THoneyTokenDALFactory } from "./honey-token-dal";
 import { HoneyTokenEventType, HoneyTokenStatus, HoneyTokenType } from "./honey-token-enums";
 import { THoneyTokenEventDALFactory } from "./honey-token-event-dal";
@@ -108,7 +108,6 @@ export type THoneyTokenServiceFactoryDep = {
   secretTagDAL: TSecretTagDALFactory;
   folderCommitService: Pick<TFolderCommitServiceFactory, "createCommit">;
   resourceMetadataDAL: Pick<TResourceMetadataDALFactory, "insertMany">;
-  snapshotService: Pick<TSecretSnapshotServiceFactory, "performSnapshot">;
   secretQueueService: Pick<TSecretQueueFactory, "syncSecrets" | "removeSecretReminder">;
   webhookDAL: Pick<TWebhookDALFactory, "findAllWebhooks" | "transaction" | "update" | "bulkUpdate">;
   projectEnvDAL: Pick<TProjectEnvDALFactory, "findOne">;
@@ -154,7 +153,6 @@ export const honeyTokenServiceFactory = ({
   secretTagDAL,
   folderCommitService,
   resourceMetadataDAL,
-  snapshotService,
   secretQueueService,
   webhookDAL,
   projectEnvDAL,
@@ -181,7 +179,6 @@ export const honeyTokenServiceFactory = ({
     secretTagDAL,
     folderCommitService,
     resourceMetadataDAL,
-    snapshotService,
     secretQueueService,
     webhookDAL,
     projectEnvDAL,
@@ -325,10 +322,11 @@ export const honeyTokenServiceFactory = ({
       plainText: Buffer.from(JSON.stringify(honeyTokenCredentials))
     }).cipherTextBlob;
 
-    const { encryptor: secretEncryptor, generateSecretBlindIndex } = await kmsService.createCipherPairWithDataKey({
+    const { encryptor: secretEncryptor } = await kmsService.createCipherPairWithDataKey({
       type: KmsDataKey.SecretManager,
       projectId
     });
+    const blindIndexer = await createSecretBlindIndexer({ projectId, orgId: actor.orgId, kmsService });
 
     const secretEntries = Object.entries(secretsMapping).map(([credentialField, secretKey]) => {
       const credentialValue = honeyTokenCredentials[credentialField];
@@ -382,7 +380,7 @@ export const honeyTokenServiceFactory = ({
           encryptedValue: secretEncryptor({
             plainText: Buffer.from(value)
           }).cipherTextBlob,
-          secretValueBlindIndex: await generateSecretBlindIndex(Buffer.from(value)),
+          blindIndexes: await blindIndexer.generateBlindIndexes(Buffer.from(value)),
           references: []
         }))
       );
@@ -414,7 +412,6 @@ export const honeyTokenServiceFactory = ({
     });
 
     await secretDAL.invalidateSecretCacheByProjectId(projectId);
-    await snapshotService.performSnapshot(folder.id);
     await secretQueueService.syncSecrets({
       orgId: actor.orgId,
       secretPath,
@@ -530,11 +527,11 @@ export const honeyTokenServiceFactory = ({
         decryptor({ cipherTextBlob: honeyToken.encryptedCredentials }).toString()
       ) as Record<string, string>;
 
-      const { encryptor: secretEncryptor, generateSecretBlindIndex: generateBlindIndex } =
-        await kmsService.createCipherPairWithDataKey({
-          type: KmsDataKey.SecretManager,
-          projectId
-        });
+      const { encryptor: secretEncryptor } = await kmsService.createCipherPairWithDataKey({
+        type: KmsDataKey.SecretManager,
+        projectId
+      });
+      const blindIndexer = await createSecretBlindIndexer({ projectId, orgId: actor.orgId, kmsService });
 
       const secretEntries = Object.entries(nextSecretsMapping).map(([credentialField, secretKey]) => {
         const credentialValue = decryptedCredentials[credentialField];
@@ -567,7 +564,7 @@ export const honeyTokenServiceFactory = ({
             encryptedValue: secretEncryptor({
               plainText: Buffer.from(value)
             }).cipherTextBlob,
-            secretValueBlindIndex: await generateBlindIndex(Buffer.from(value)),
+            blindIndexes: await blindIndexer.generateBlindIndexes(Buffer.from(value)),
             references: []
           }))
         );
@@ -605,7 +602,6 @@ export const honeyTokenServiceFactory = ({
         : await honeyTokenDAL.updateById(honeyTokenId, updatePayload);
 
     await secretDAL.invalidateSecretCacheByProjectId(projectId);
-    await snapshotService.performSnapshot(honeyToken.folderId);
 
     const [folderInfo] = await folderDAL.findSecretPathByFolderIds(projectId, [honeyToken.folderId]);
     if (folderInfo && hasSecretsMappingChanges) {
@@ -732,7 +728,6 @@ export const honeyTokenServiceFactory = ({
     });
 
     await secretDAL.invalidateSecretCacheByProjectId(projectId);
-    await snapshotService.performSnapshot(honeyToken.folderId);
 
     const [folderInfo] = await folderDAL.findSecretPathByFolderIds(projectId, [honeyToken.folderId]);
     if (folderInfo) {

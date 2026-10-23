@@ -49,6 +49,7 @@ import {
 } from "@app/services/secret-sync/windmill";
 
 import { TAppConnectionDALFactory } from "../app-connection/app-connection-dal";
+import { TAppConnection } from "../app-connection/app-connection-types";
 import { TKmsServiceFactory } from "../kms/kms-service";
 import { TSecretV2BridgeDALFactory } from "../secret-v2-bridge/secret-v2-bridge-dal";
 import {
@@ -113,11 +114,23 @@ import {
   TCloudflarePagesSyncWithCredentials
 } from "./cloudflare-pages/cloudflare-pages-types";
 import {
+  TCloudflareSecretsStoreSync,
+  TCloudflareSecretsStoreSyncInput,
+  TCloudflareSecretsStoreSyncListItem,
+  TCloudflareSecretsStoreSyncWithCredentials
+} from "./cloudflare-secrets-store";
+import {
   TCloudflareWorkersSync,
   TCloudflareWorkersSyncInput,
   TCloudflareWorkersSyncListItem,
   TCloudflareWorkersSyncWithCredentials
 } from "./cloudflare-workers";
+import {
+  TDaytonaSync,
+  TDaytonaSyncInput,
+  TDaytonaSyncListItem,
+  TDaytonaSyncWithCredentials
+} from "./daytona/daytona-sync-types";
 import { TDevinSync, TDevinSyncInput, TDevinSyncListItem, TDevinSyncWithCredentials } from "./devin/devin-sync-types";
 import {
   TDigitalOceanAppPlatformSyncInput,
@@ -134,6 +147,12 @@ import { TFlyioSync, TFlyioSyncInput, TFlyioSyncListItem, TFlyioSyncWithCredenti
 import { TGcpSync, TGcpSyncInput, TGcpSyncListItem, TGcpSyncWithCredentials } from "./gcp";
 import { TGitLabSync, TGitLabSyncInput, TGitLabSyncListItem, TGitLabSyncWithCredentials } from "./gitlab";
 import {
+  THasuraCloudSync,
+  THasuraCloudSyncInput,
+  THasuraCloudSyncListItem,
+  THasuraCloudSyncWithCredentials
+} from "./hasura-cloud/hasura-cloud-sync-types";
+import {
   THCVaultSync,
   THCVaultSyncInput,
   THCVaultSyncListItem,
@@ -146,6 +165,12 @@ import {
   THumanitecSyncListItem,
   THumanitecSyncWithCredentials
 } from "./humanitec";
+import {
+  TKeeperSync,
+  TKeeperSyncInput,
+  TKeeperSyncListItem,
+  TKeeperSyncWithCredentials
+} from "./keeper/keeper-sync-types";
 import {
   TLaravelForgeSync,
   TLaravelForgeSyncInput,
@@ -167,6 +192,12 @@ import {
 } from "./octopus-deploy";
 import { TOnaSync, TOnaSyncInput, TOnaSyncListItem, TOnaSyncWithCredentials } from "./ona";
 import { TOvhSync, TOvhSyncInput, TOvhSyncListItem, TOvhSyncWithCredentials } from "./ovh";
+import {
+  TPortainerSync,
+  TPortainerSyncInput,
+  TPortainerSyncListItem,
+  TPortainerSyncWithCredentials
+} from "./portainer/portainer-sync-types";
 import { TQoverySync, TQoverySyncInput, TQoverySyncListItem, TQoverySyncWithCredentials } from "./qovery";
 import {
   TRailwaySync,
@@ -181,11 +212,23 @@ import {
   TRenderSyncWithCredentials
 } from "./render/render-sync-types";
 import {
+  TRundeckSync,
+  TRundeckSyncInput,
+  TRundeckSyncListItem,
+  TRundeckSyncWithCredentials
+} from "./rundeck/rundeck-sync-types";
+import {
   TSnowflakeSync,
   TSnowflakeSyncInput,
   TSnowflakeSyncListItem,
   TSnowflakeSyncWithCredentials
 } from "./snowflake";
+import {
+  TSpaceliftSync,
+  TSpaceliftSyncInput,
+  TSpaceliftSyncListItem,
+  TSpaceliftSyncWithCredentials
+} from "./spacelift";
 import {
   TSupabaseSync,
   TSupabaseSyncInput,
@@ -242,10 +285,13 @@ export type TSecretSync =
   | TGitLabSync
   | TCloudflarePagesSync
   | TCloudflareWorkersSync
+  | TCloudflareSecretsStoreSync
   | TZabbixSync
   | TRailwaySync
   | TChecklySync
   | TSupabaseSync
+  | TRundeckSync
+  | TPortainerSync
   | TNetlifySync
   | TNorthflankSync
   | TBitbucketSync
@@ -258,7 +304,11 @@ export type TSecretSync =
   | TOnaSync
   | TTravisCISync
   | TSnowflakeSync
-  | TCloud66Sync;
+  | THasuraCloudSync
+  | TCloud66Sync
+  | TSpaceliftSync
+  | TDaytonaSync
+  | TKeeperSync;
 
 export type TSecretSyncWithCredentials =
   | TAwsParameterStoreSyncWithCredentials
@@ -287,10 +337,13 @@ export type TSecretSyncWithCredentials =
   | TGitLabSyncWithCredentials
   | TCloudflarePagesSyncWithCredentials
   | TCloudflareWorkersSyncWithCredentials
+  | TCloudflareSecretsStoreSyncWithCredentials
   | TZabbixSyncWithCredentials
   | TRailwaySyncWithCredentials
   | TChecklySyncWithCredentials
   | TSupabaseSyncWithCredentials
+  | TRundeckSyncWithCredentials
+  | TPortainerSyncWithCredentials
   | TDigitalOceanAppPlatformSyncWithCredentials
   | TNetlifySyncWithCredentials
   | TNorthflankSyncWithCredentials
@@ -305,7 +358,11 @@ export type TSecretSyncWithCredentials =
   | TOnaSyncWithCredentials
   | TTravisCISyncWithCredentials
   | TSnowflakeSyncWithCredentials
-  | TCloud66SyncWithCredentials;
+  | THasuraCloudSyncWithCredentials
+  | TCloud66SyncWithCredentials
+  | TSpaceliftSyncWithCredentials
+  | TDaytonaSyncWithCredentials
+  | TKeeperSyncWithCredentials;
 
 export type TSecretSyncInput =
   | TAwsParameterStoreSyncInput
@@ -334,10 +391,13 @@ export type TSecretSyncInput =
   | TGitLabSyncInput
   | TCloudflarePagesSyncInput
   | TCloudflareWorkersSyncInput
+  | TCloudflareSecretsStoreSyncInput
   | TZabbixSyncInput
   | TRailwaySyncInput
   | TChecklySyncInput
   | TSupabaseSyncInput
+  | TRundeckSyncInput
+  | TPortainerSyncInput
   | TDigitalOceanAppPlatformSyncInput
   | TNetlifySyncInput
   | TNorthflankSyncInput
@@ -352,7 +412,11 @@ export type TSecretSyncInput =
   | TOnaSyncInput
   | TTravisCISyncInput
   | TSnowflakeSyncInput
-  | TCloud66SyncInput;
+  | THasuraCloudSyncInput
+  | TCloud66SyncInput
+  | TSpaceliftSyncInput
+  | TDaytonaSyncInput
+  | TKeeperSyncInput;
 
 export type TSecretSyncListItem =
   | TAwsParameterStoreSyncListItem
@@ -382,10 +446,13 @@ export type TSecretSyncListItem =
   | TGitLabSyncListItem
   | TCloudflarePagesSyncListItem
   | TCloudflareWorkersSyncListItem
+  | TCloudflareSecretsStoreSyncListItem
   | TZabbixSyncListItem
   | TRailwaySyncListItem
   | TChecklySyncListItem
   | TSupabaseSyncListItem
+  | TRundeckSyncListItem
+  | TPortainerSyncListItem
   | TDigitalOceanAppPlatformSyncListItem
   | TNetlifySyncListItem
   | TNorthflankSyncListItem
@@ -399,7 +466,11 @@ export type TSecretSyncListItem =
   | TOnaSyncListItem
   | TTravisCISyncListItem
   | TSnowflakeSyncListItem
-  | TCloud66SyncListItem;
+  | THasuraCloudSyncListItem
+  | TCloud66SyncListItem
+  | TSpaceliftSyncListItem
+  | TDaytonaSyncListItem
+  | TKeeperSyncListItem;
 
 export type TSyncOptionsConfig = {
   canImportSecrets: boolean;
@@ -453,8 +524,16 @@ export type TDeleteSecretSyncDTO = {
 export type TCheckDuplicateDestinationDTO = {
   destination: SecretSync;
   destinationConfig: Record<string, unknown>;
+  connectionId?: string | null;
   excludeSyncId?: string;
   projectId: string;
+};
+
+export type TFindRecursiveSyncConflictsDTO = {
+  projectId: string;
+  environment: string;
+  secretPath: string;
+  keySchema?: string;
 };
 
 export enum SecretSyncStatus {
@@ -549,10 +628,16 @@ export type TSecretMap = Record<
   }
 >;
 
-export type DestinationDuplicateCheckFn = (
-  existingConfig: Record<string, unknown>,
-  newConfig: Record<string, unknown>
-) => boolean;
+export type DuplicateCheckSyncFields = {
+  connectionId: string | null;
+  destinationConfig: Record<string, unknown>;
+};
+
+export type DestinationDuplicateCheckFn = (opts: {
+  existingSync: DuplicateCheckSyncFields;
+  newSync: DuplicateCheckSyncFields;
+  decryptConnection: (connectionId: string) => Promise<TAppConnection>;
+}) => Promise<boolean>;
 
 export type TPreSaveTransformDeps = {
   secretV2BridgeDAL: Pick<TSecretV2BridgeDALFactory, "findOne">;
@@ -568,6 +653,7 @@ export type TPreSaveTransformSyncOptionsParams = {
 
 export type TPreSaveTransformDestinationConfigParams = {
   destinationConfig: Record<string, unknown> | undefined;
+  existingDestinationConfig?: Record<string, unknown>;
   connectionId: string;
 };
 

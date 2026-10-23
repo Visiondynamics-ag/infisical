@@ -1,6 +1,8 @@
+import "./lib/config/disable-sdk-platform-detection";
 // Note(Daniel): Do not rename this import, as it is strictly removed from FIPS standalone builds to avoid FIPS mode issues.
 // If you rename the import, update the Dockerfile.fips.standalone-infisical file as well.
 import "./lib/telemetry/instrumentation";
+import "./lib/config/snowflake-sdk-ocsp";
 
 import axios from "axios";
 import dotenv from "dotenv";
@@ -55,7 +57,9 @@ const run = async () => {
   const db = initDbConnection({
     dbConnectionUri: databaseCredentials.dbConnectionUri,
     dbRootCert: databaseCredentials.dbRootCert,
-    readReplicas: databaseCredentials.readReplicas
+    readReplicas: databaseCredentials.readReplicas,
+    pool: databaseCredentials.pool,
+    replicaPool: databaseCredentials.replicaPool
   });
 
   // Register connection-pool and entity-count observable gauges. No-ops when telemetry is disabled.
@@ -72,7 +76,8 @@ const run = async () => {
   const auditLogDb = envConfig.AUDIT_LOGS_DB_CONNECTION_URI
     ? initAuditLogDbConnection({
         dbConnectionUri: envConfig.AUDIT_LOGS_DB_CONNECTION_URI,
-        dbRootCert: envConfig.AUDIT_LOGS_DB_ROOT_CERT
+        dbRootCert: envConfig.AUDIT_LOGS_DB_ROOT_CERT,
+        pool: { min: envConfig.AUDIT_LOGS_DB_POOL_MIN, max: envConfig.AUDIT_LOGS_DB_POOL_MAX }
       })
     : undefined;
 
@@ -90,7 +95,7 @@ const run = async () => {
 
   const keyValueStoreDAL = keyValueStoreDALFactory(db);
   const keyStore = keyStoreFactory(envConfig, keyValueStoreDAL);
-  const redis = buildRedisFromConfig(envConfig);
+  const redis = buildRedisFromConfig(envConfig, "app");
 
   const server = await main({
     db,

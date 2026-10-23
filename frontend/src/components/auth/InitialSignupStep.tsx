@@ -1,43 +1,58 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { faGithub, faGitlab, faGoogle } from "@fortawesome/free-brands-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import HCaptcha from "@hcaptcha/react-hcaptcha";
 import { Link } from "@tanstack/react-router";
-import { CircleChevronRightIcon } from "lucide-react";
-import { z } from "zod";
 
 import { RegionSelect } from "@app/components/navigation/RegionSelect";
+import { createNotification } from "@app/components/notifications";
 import {
   Button,
-  Card,
+  ButtonBadge,
   CardAction,
   CardContent,
+  CardDescription,
   CardHeader,
   CardTitle,
-  FieldError,
+  FieldSeparator,
   Input
 } from "@app/components/v3";
+import { envConfig } from "@app/config/env";
 import { useServerConfig } from "@app/context";
+import { isValidEmail } from "@app/helpers/email";
 import { preserveHubSpotUtk } from "@app/helpers/utmTracking";
 import { useSendVerificationEmail } from "@app/hooks/api";
 import { LoginMethod } from "@app/hooks/api/admin/types";
 
+import { AuthPagePanel } from "./AuthPagePanel";
+
 interface InitialSignupStepProps {
   email: string;
   setEmail: (value: string) => void;
-
-  incrementStep: (cooldownSeconds: number) => void;
+  incrementStep: (email: string, cooldownSeconds: number) => void;
+  pendingVerificationEmail?: string;
+  onResumeVerification: () => void;
+  callbackPort?: number;
 }
 
 export default function InitialSignupStep({
   email,
   setEmail,
-  incrementStep
+  incrementStep,
+  pendingVerificationEmail,
+  onResumeVerification,
+  callbackPort
 }: InitialSignupStepProps) {
   const { t } = useTranslation();
   const { config } = useServerConfig();
   const { mutateAsync, isPending } = useSendVerificationEmail();
+  const requiresCaptcha = Boolean(envConfig.CAPTCHA_SITE_KEY);
   const [emailError, setEmailError] = useState(false);
+  const [isCaptchaReady, setIsCaptchaReady] = useState(!requiresCaptcha);
+  const [isCaptchaPending, setIsCaptchaPending] = useState(false);
+  const captchaRef = useRef<HCaptcha>(null);
+  const isEmailValid = isValidEmail(email);
 
   const shouldDisplaySignupMethod = (method: LoginMethod) =>
     !config.enabledLoginMethods || config.enabledLoginMethods.includes(method);
@@ -48,22 +63,59 @@ export default function InitialSignupStep({
     shouldDisplaySignupMethod(LoginMethod.GITLAB);
 
   const handleEmailSignup = async () => {
-    const isValid = z.string().email().safeParse(email);
-
-    if (!isValid.success) {
+    if (!isEmailValid) {
       setEmailError(true);
       return;
     }
 
     setEmailError(false);
-    const { cooldownSeconds } = await mutateAsync({ email: email.toLowerCase() });
-    setEmail(email.toLowerCase());
-    incrementStep(cooldownSeconds);
+    const normalizedEmail = email.toLowerCase();
+
+    if (normalizedEmail === pendingVerificationEmail) {
+      setEmail(normalizedEmail);
+      onResumeVerification();
+      return;
+    }
+
+    let captchaToken: string | undefined;
+
+    if (requiresCaptcha) {
+      setIsCaptchaPending(true);
+      try {
+        captchaToken = (await captchaRef.current?.execute({ async: true }))?.response;
+        if (!captchaToken) {
+          throw new Error("hCaptcha did not return a token");
+        }
+      } catch {
+        createNotification({
+          type: "error",
+          text: "Captcha verification failed. Please try again."
+        });
+        captchaRef.current?.resetCaptcha();
+        return;
+      } finally {
+        setIsCaptchaPending(false);
+      }
+    }
+
+    try {
+      const { cooldownSeconds } = await mutateAsync({
+        email: normalizedEmail,
+        captchaToken
+      });
+      incrementStep(normalizedEmail, cooldownSeconds);
+    } finally {
+      // hCaptcha tokens are single-use, so a retry with a stale one is rejected server-side.
+      if (requiresCaptcha) {
+        captchaRef.current?.resetCaptcha();
+      }
+    }
   };
 
   const handleSocialSignup = (method: LoginMethod) => {
     preserveHubSpotUtk();
-    const popup = window.open(`/api/v1/sso/redirect/${method}`);
+    const query = callbackPort ? `?callback_port=${encodeURIComponent(callbackPort)}` : "";
+    const popup = window.open(`/api/v1/sso/redirect/${method}${query}`);
     if (popup) {
       window.close();
     }
@@ -71,27 +123,31 @@ export default function InitialSignupStep({
 
   return (
     <div className="mx-auto flex w-full flex-col items-center justify-center">
-      <Card className="mx-auto w-full max-w-sm items-stretch gap-0 p-6">
-        <CardHeader className="mb-4 gap-4">
-          <CardTitle className="ml-0.5 bg-linear-to-b from-white to-bunker-200 bg-clip-text text-[1.65rem] font-medium text-transparent">
-            {t("signup.initial-title")}
+      <AuthPagePanel>
+        <CardHeader className="mb-6 gap-2">
+          <CardTitle className="ml-0.5 bg-linear-to-b from-foreground-inverse to-foreground-soft bg-clip-text font-alliance text-2xl font-normal text-transparent">
+            Sign up
           </CardTitle>
-          <CardAction className="-mr-2">
+          <CardDescription className="ml-0.5 text-base">
+            Create your Infisical account
+          </CardDescription>
+          <CardAction>
             <RegionSelect compact />
           </CardAction>
         </CardHeader>
-        <CardContent>
+        <CardContent className="flex flex-col gap-4">
           <div className="flex w-full flex-col gap-2">
             {shouldDisplaySignupMethod(LoginMethod.GITHUB) && (
               <Button
                 aria-label="Continue with GitHub"
-                variant="project"
+                variant="outline"
                 size="lg"
                 isFullWidth
                 onClick={() => handleSocialSignup(LoginMethod.GITHUB)}
               >
-                <FontAwesomeIcon icon={faGithub} className="!size-4" />
+                <FontAwesomeIcon icon={faGithub} />
                 Continue with GitHub
+                <ButtonBadge variant="project">Recommended</ButtonBadge>
               </Button>
             )}
             {shouldDisplaySignupMethod(LoginMethod.GOOGLE) && (
@@ -102,7 +158,7 @@ export default function InitialSignupStep({
                 isFullWidth
                 onClick={() => handleSocialSignup(LoginMethod.GOOGLE)}
               >
-                <FontAwesomeIcon icon={faGoogle} className="!size-4" />
+                <FontAwesomeIcon icon={faGoogle} />
                 {t("signup.continue-with-google")}
               </Button>
             )}
@@ -114,93 +170,62 @@ export default function InitialSignupStep({
                 isFullWidth
                 onClick={() => handleSocialSignup(LoginMethod.GITLAB)}
               >
-                <FontAwesomeIcon icon={faGitlab} className="!size-4" />
+                <FontAwesomeIcon icon={faGitlab} />
                 Continue with GitLab
               </Button>
             )}
           </div>
           {hasSsoSignupMethod && shouldDisplaySignupMethod(LoginMethod.EMAIL) && (
-            <div className="my-4 flex w-full flex-row items-center py-2">
-              <div className="w-full border-t border-mineshaft-400/60" />
-              <span className="mx-2 text-xs text-mineshaft-400">or</span>
-              <div className="w-full border-t border-mineshaft-400/60" />
-            </div>
+            <FieldSeparator>or</FieldSeparator>
           )}
           {shouldDisplaySignupMethod(LoginMethod.EMAIL) && (
-            <>
-              <div className="w-full">
-                <Input
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  type="email"
-                  placeholder="Enter your email..."
-                  required
-                  autoComplete="username"
-                  className="h-10"
-                  isError={emailError}
+            <div className="flex w-full flex-col gap-4">
+              <Input
+                variant="outlined"
+                value={email}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  setEmailError(false);
+                }}
+                type="email"
+                placeholder="you@company.com"
+                required
+                autoComplete="username"
+                className="h-10"
+                isError={emailError}
+              />
+              {envConfig.CAPTCHA_SITE_KEY && (
+                <HCaptcha
+                  size="invisible"
+                  theme="dark"
+                  sitekey={envConfig.CAPTCHA_SITE_KEY}
+                  onLoad={() => setIsCaptchaReady(true)}
+                  ref={captchaRef}
                 />
-                {emailError && <FieldError>Please enter a valid email.</FieldError>}
-              </div>
-              <div className="mt-4 w-full">
-                <Button
-                  type="submit"
-                  onClick={handleEmailSignup}
-                  variant="outline"
-                  size="lg"
-                  isFullWidth
-                  isDisabled={isPending}
-                  isPending={isPending}
-                >
-                  Continue with Email
-                </Button>
-              </div>
-            </>
+              )}
+              <Button
+                type="submit"
+                onClick={handleEmailSignup}
+                variant="project"
+                size="lg"
+                isFullWidth
+                isDisabled={!isEmailValid || isPending || isCaptchaPending || !isCaptchaReady}
+                isPending={isPending || isCaptchaPending}
+              >
+                Continue with Email
+              </Button>
+            </div>
           )}
-          <p className="mt-4 text-center text-xs text-pretty text-label">
-            By signing up, you agree to our{" "}
-            <a
-              href="https://infisical.com/terms/cloud"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="cursor-pointer underline underline-offset-2 duration-200 hover:text-foreground hover:decoration-project/45"
-            >
-              Terms of Service
-            </a>{" "}
-            and{" "}
-            <a
-              href="https://infisical.com/privacy"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="cursor-pointer underline underline-offset-2 duration-200 hover:text-foreground hover:decoration-project/45"
-            >
-              Privacy Policy
-            </a>
-            .
-          </p>
         </CardContent>
-      </Card>
-      <div className="mt-6 w-full max-w-sm rounded-lg bg-background">
-        <a
-          href="https://infisical.com/talk-to-us?utm_source=signup&utm_medium=referral"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex w-full cursor-pointer items-center justify-between gap-3 rounded-lg border border-project/35 bg-project/10 px-4 py-3 text-foreground transition-colors hover:border-project/40 hover:bg-project/15"
-        >
-          <span className="min-w-0 flex-1 text-xs text-foreground/75">
-            Have a complex company use case?{" "}
-            <span className="font-medium">
-              Get <span className="text-white/90">Enterprise grade</span> assistance
-            </span>
-          </span>
-          <CircleChevronRightIcon className="size-4.5 opacity-75" />
-        </a>
-      </div>
-      <div className="mt-4 flex flex-row items-center justify-center gap-1.5 text-sm">
+      </AuthPagePanel>
+      <div className="mt-3 flex items-center justify-center gap-1.5 text-sm">
         <span className="text-label">Already have an account?</span>
-        <Link to="/login">
-          <span className="cursor-pointer text-foreground/95 underline decoration-project/60 underline-offset-2 transition-colors duration-200 hover:decoration-project">
-            Log in
-          </span>
+        <Link
+          to="/login"
+          search={{ callback_port: callbackPort }}
+          className="text-foreground/95 underline decoration-project/60 underline-offset-2 transition-colors duration-200 hover:decoration-project"
+        >
+          Log in
         </Link>
       </div>
     </div>

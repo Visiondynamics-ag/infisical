@@ -1,6 +1,7 @@
 import { CaType } from "@app/hooks/api/ca/enums";
 import { CertKeySource, SignerKeyAlgorithm, SignerMemberRole } from "@app/hooks/api/signers";
 
+import { ExternalOrderMode } from "../../../components/DigiCertExistingOrderField";
 import { PkiDocsUrls } from "../../../pki-docs-urls";
 
 export type CaGroup = "internal" | "external";
@@ -10,6 +11,7 @@ export type CaOption = {
   groupType: CaGroup;
   caType: CaType;
   digicert?: { appConnectionId: string; organizationId: number; productNameId: string };
+  adcs?: { appConnectionId: string };
 };
 
 export type MemberOption = { value: string; label: string };
@@ -51,7 +53,13 @@ export type WizardState = {
   keyAlgorithm: SignerKeyAlgorithm;
   keySource: CertKeySource;
   hsmConnectorId: string | null;
-  reissueFromExternalOrderId: string | null;
+  externalOrderId: string | null;
+  externalOrderMode: ExternalOrderMode;
+  hsmKeyLabel: string;
+  hsmKeyId: string;
+  hsmKeyIdRequired: boolean;
+  hsmKeyUnresolved: boolean;
+  adcsTemplate: string;
   pendingMembers: PendingMember[];
   policySteps: PolicyStep[];
   maxSignings: number | null;
@@ -68,7 +76,13 @@ export const INITIAL_WIZARD_STATE: WizardState = {
   keyAlgorithm: SignerKeyAlgorithm.RSA_2048,
   keySource: CertKeySource.Infisical,
   hsmConnectorId: null,
-  reissueFromExternalOrderId: null,
+  externalOrderId: null,
+  externalOrderMode: ExternalOrderMode.Reissue,
+  hsmKeyLabel: "",
+  hsmKeyId: "",
+  hsmKeyIdRequired: false,
+  hsmKeyUnresolved: false,
+  adcsTemplate: "",
   pendingMembers: [],
   policySteps: [],
   maxSignings: null,

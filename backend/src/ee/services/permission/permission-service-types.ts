@@ -1,9 +1,15 @@
 import { MongoAbility, RawRuleOf } from "@casl/ability";
 import { PackRule } from "@casl/ability/extra";
 import { MongoQuery } from "@ucast/mongo2js";
-import type { Knex } from "knex";
+import { Knex } from "knex";
 
-import { ActionProjectType, OrganizationActionScope, ResourceType, TMemberships } from "@app/db/schemas";
+import {
+  AccessScopeData,
+  ActionProjectType,
+  OrganizationActionScope,
+  ResourceType,
+  TMemberships
+} from "@app/db/schemas";
 import { ActorAuthMethod, ActorType } from "@app/services/auth/auth-type";
 
 import { OrgPermissionSet } from "./org-permission";
@@ -28,8 +34,6 @@ export type TGetServiceTokenProjectPermissionArg = {
 };
 
 export type TGetProjectPermissionArg = {
-  /** Internal read-only snapshot handle; never populated from request data. */
-  snapshotTx?: Knex.Transaction;
   actor: ActorType;
   actorId: string;
   projectId: string;
@@ -55,6 +59,7 @@ export type TGetMembershipPermissionAuditArg = {
   actorOrgId: string;
   projectId: string;
   targetUserId: string;
+  includeFolderPermissions: boolean;
 };
 
 export type TGetIdentityPermissionAuditArg = {
@@ -64,6 +69,7 @@ export type TGetIdentityPermissionAuditArg = {
   actorOrgId: string;
   projectId: string;
   targetIdentityId: string;
+  includeFolderPermissions: boolean;
 };
 
 export type TPermissionAuditSource = {
@@ -79,9 +85,22 @@ export type TPermissionAuditSource = {
   permissions: PackRule<RawRuleOf<MongoAbility<ProjectPermissionSet>>>[];
 };
 
+export type TProjectFolderScopedPrivilege = {
+  id: string;
+  folderId: string;
+  role: string;
+  environmentSlug: string;
+  secretPath: string;
+};
+
+export type TCachedFolderScopedPrivileges = {
+  privileges: (TProjectFolderScopedPrivilege & {
+    isTemporary: boolean;
+    temporaryAccessEndTime?: Date | null;
+  })[];
+};
+
 export type TGetOrgPermissionArg = {
-  /** Internal read-only snapshot handle; never populated from request data. */
-  snapshotTx?: Knex.Transaction;
   actor: ActorType;
   actorId: string;
   orgId: string;
@@ -90,12 +109,11 @@ export type TGetOrgPermissionArg = {
   scope: OrganizationActionScope;
 };
 
+export type TResolveRolesOpts = {
+  ignoreUnresolvedRoles?: boolean;
+};
+
 export type TPermissionServiceFactory = {
-  /** Internal fixed kalscan target only; never populated from request scope. */
-  getFixedKalscanIdentityOrgSnapshotPermission: (arg: {
-    snapshotTx: Knex.Transaction;
-    actorAuthMethod: ActorAuthMethod;
-  }) => ReturnType<TPermissionServiceFactory["getOrgPermission"]>;
   getOrgPermission: (arg: TGetOrgPermissionArg) => Promise<{
     permission: MongoAbility<OrgPermissionSet, MongoQuery>;
     memberships: Array<
@@ -108,10 +126,27 @@ export type TPermissionServiceFactory = {
   }>;
   getProjectPermission: (arg: TGetProjectPermissionArg) => Promise<{
     permission: MongoAbility<ProjectPermissionSet, MongoQuery>;
-    memberships: Array<TMemberships & { roles: { role: string; customRoleSlug?: string | null }[] }>;
+    memberships: Array<
+      TMemberships & {
+        roles: {
+          role: string;
+          customRoleSlug?: string | null;
+          isTemporary?: boolean;
+          temporaryAccessEndTime?: Date | null;
+        }[];
+      }
+    >;
     hasRole: (role: string) => boolean;
     hasProjectEnforcement: (check: "enforceEncryptedSecretManagerSecretMetadata") => boolean;
+    folderScopedPrivileges: TProjectFolderScopedPrivilege[];
   }>;
+  invalidateProjectFolderPermissionCache: (projectId: string | string[], tx?: Knex) => Promise<void>;
+  getProjectPermissionFingerprint: (arg: {
+    projectId: string;
+    orgId: string;
+    actorId: string;
+    actorType: ActorType.USER | ActorType.IDENTITY;
+  }) => Promise<string>;
   getResourcePermission: (arg: TGetResourcePermissionArg) => Promise<{
     permission: MongoAbility<ResourcePermissionSet, MongoQuery>;
     memberships: Array<TMemberships & { roles: { role: string; customRoleSlug?: string | null }[] }>;
@@ -143,7 +178,8 @@ export type TPermissionServiceFactory = {
   }>;
   getOrgPermissionByRoles: (
     roles: string[],
-    orgId: string
+    orgId: string,
+    opts?: TResolveRolesOpts
   ) => Promise<
     {
       permission: MongoAbility<OrgPermissionSet, MongoQuery>;
@@ -160,7 +196,8 @@ export type TPermissionServiceFactory = {
   >;
   getProjectPermissionByRoles: (
     roles: string[],
-    projectId: string
+    projectId: string,
+    opts?: TResolveRolesOpts
   ) => Promise<
     {
       permission: MongoAbility<ProjectPermissionSet, MongoQuery>;
@@ -184,6 +221,11 @@ export type TPermissionServiceFactory = {
     projectId: string;
     checkPermissions: ProjectPermissionSet;
   }) => Promise<boolean>;
+  getActorGrantAbilities: (arg: {
+    scopeData: AccessScopeData;
+    actorId: string;
+    actorType: ActorType.USER | ActorType.IDENTITY;
+  }) => Promise<{ permission: MongoAbility }[]>;
   getMembershipPermissionAudit: (arg: TGetMembershipPermissionAuditArg) => Promise<{
     sources: TPermissionAuditSource[];
   }>;

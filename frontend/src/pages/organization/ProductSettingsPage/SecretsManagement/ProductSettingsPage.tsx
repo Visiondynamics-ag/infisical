@@ -1,9 +1,12 @@
 import { Helmet } from "react-helmet";
 import { KeyRound } from "lucide-react";
 
+import {
+  CrossProjectSecretSharingUpgradeIntent,
+  useUpgradeGate
+} from "@app/components/license/UpgradeGate";
 import { createNotification } from "@app/components/notifications";
 import { OrgPermissionCan } from "@app/components/permissions";
-import { PageHeader } from "@app/components/v2";
 import {
   Card,
   CardContent,
@@ -15,9 +18,15 @@ import {
   FieldDescription,
   FieldGroup,
   FieldTitle,
-  Switch
+  Toggle
 } from "@app/components/v3";
-import { OrgPermissionActions, OrgPermissionSubjects, useOrganization } from "@app/context";
+import { PageHeader } from "@app/components/v3/platform";
+import {
+  OrgPermissionActions,
+  OrgPermissionSubjects,
+  useOrganization,
+  useSubscription
+} from "@app/context";
 import { useUpdateOrg } from "@app/hooks/api/organization/queries";
 import { ProjectType } from "@app/hooks/api/projects/types";
 
@@ -27,6 +36,8 @@ import { ProjectTemplatesSection } from "./project-templates/ProjectTemplatesSec
 export const ProductSettingsPage = () => {
   const { currentOrg } = useOrganization();
   const { mutateAsync: updateOrg, isPending } = useUpdateOrg();
+  const { subscription } = useSubscription();
+  const { openUpgradeGate, upgradeGate } = useUpgradeGate();
 
   const handleToggle = async (state: boolean) => {
     if (!currentOrg?.id) return;
@@ -42,14 +53,36 @@ export const ProductSettingsPage = () => {
     });
   };
 
+  const handleCrossProjectSharingToggle = async (state: boolean) => {
+    if (!currentOrg?.id) return;
+
+    if (state && !subscription?.crossProjectSecretSharing) {
+      openUpgradeGate({
+        intent: CrossProjectSecretSharingUpgradeIntent,
+        paywallKey: "organization.product-settings"
+      });
+      return;
+    }
+
+    await updateOrg({
+      orgId: currentOrg.id,
+      allowCrossProjectSecretSharing: state
+    });
+
+    createNotification({
+      text: `Successfully ${state ? "enabled" : "disabled"} cross-project secret sharing for this organization`,
+      type: "success"
+    });
+  };
+
   return (
     <>
       <Helmet>
         <title>Product Settings | Infisical</title>
         <link rel="icon" href="/infisical.ico" />
       </Helmet>
-      <div className="h-full">
-        <div className="mx-auto h-full w-full max-w-8xl bg-bunker-800 text-white">
+      <div>
+        <div className="mx-auto w-full max-w-8xl bg-page text-foreground-inverse">
           <PageHeader
             scope={ProjectType.SecretManager}
             title="Product Settings"
@@ -81,11 +114,34 @@ export const ProductSettingsPage = () => {
                       a={OrgPermissionSubjects.Settings}
                     >
                       {(isAllowed) => (
-                        <Switch
+                        <Toggle
                           id="block-duplicate-secret-sync-destinations"
                           variant="project"
                           checked={currentOrg?.blockDuplicateSecretSyncDestinations ?? false}
                           onCheckedChange={(value) => handleToggle(value)}
+                          disabled={!isAllowed || isPending}
+                        />
+                      )}
+                    </OrgPermissionCan>
+                  </Field>
+                  <Field orientation="horizontal">
+                    <FieldContent>
+                      <FieldTitle>Cross-project secret sharing</FieldTitle>
+                      <FieldDescription>
+                        When enabled, allows secret imports and secret references to target folders
+                        and secrets from other projects within the same organization.
+                      </FieldDescription>
+                    </FieldContent>
+                    <OrgPermissionCan
+                      I={OrgPermissionActions.Edit}
+                      a={OrgPermissionSubjects.Settings}
+                    >
+                      {(isAllowed) => (
+                        <Toggle
+                          id="allow-cross-project-secret-sharing"
+                          variant="project"
+                          checked={currentOrg?.allowCrossProjectSecretSharing ?? false}
+                          onCheckedChange={(value) => handleCrossProjectSharingToggle(value)}
                           disabled={!isAllowed || isPending}
                         />
                       )}
@@ -104,6 +160,7 @@ export const ProductSettingsPage = () => {
           </div>
         </div>
       </div>
+      {upgradeGate}
     </>
   );
 };

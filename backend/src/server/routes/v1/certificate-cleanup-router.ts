@@ -21,7 +21,7 @@ export const registerCertificateCleanupRouter = async (server: FastifyZodProvide
     schema: {
       hide: false,
       operationId: "getCertificateCleanupConfig",
-      description: "Get certificate cleanup configuration for a project",
+      description: "Get the certificate cleanup configuration",
       tags: [ApiDocsTags.PkiCertificates],
       querystring: z.object({
         projectId: z.string().trim().optional().describe(openApiHidden())
@@ -54,7 +54,7 @@ export const registerCertificateCleanupRouter = async (server: FastifyZodProvide
     schema: {
       hide: false,
       operationId: "updateCertificateCleanupConfig",
-      description: "Create or update certificate cleanup configuration for a project",
+      description: "Create or update the certificate cleanup configuration",
       tags: [ApiDocsTags.PkiCertificates],
       body: z.object({
         projectId: z.string().trim().optional().describe(openApiHidden()),
@@ -106,7 +106,8 @@ export const registerCertificateCleanupRouter = async (server: FastifyZodProvide
         organizationId: req.permission.orgId,
         properties: {
           isEnabled: config.isEnabled,
-          orgId: req.permission.orgId
+          orgId: req.permission.orgId,
+          projectId: req.internalCertManagerProjectId
         }
       });
 

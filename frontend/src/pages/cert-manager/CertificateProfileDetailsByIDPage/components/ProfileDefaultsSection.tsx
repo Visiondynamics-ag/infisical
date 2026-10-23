@@ -16,6 +16,7 @@ import {
   EmptyTitle
 } from "@app/components/v3";
 import { TCertificateProfileWithDetails } from "@app/hooks/api/certificateProfiles";
+import { CustomExtensionList } from "@app/pages/cert-manager/components/CustomExtensionList";
 import {
   CertExtendedKeyUsageType,
   CertKeyUsageType,
@@ -28,7 +29,7 @@ type Props = {
 };
 
 const SectionHeader = ({ icon, title }: { icon: React.ReactNode; title: string }) => (
-  <h3 className="mb-4 flex items-center gap-2 text-base font-medium text-foreground">
+  <h3 className="mb-4 flex items-center gap-2 text-base font-normal text-foreground">
     <span className="text-label [&>svg]:size-4">{icon}</span>
     {title}
   </h3>
@@ -43,7 +44,8 @@ export const ProfileDefaultsSection = ({ profile }: Props) => {
       defaults?.organizationalUnit ||
       defaults?.country ||
       defaults?.state ||
-      defaults?.locality
+      defaults?.locality ||
+      (defaults?.domainComponents && defaults.domainComponents.length > 0)
   );
 
   const hasCryptoDefaults = Boolean(
@@ -225,7 +227,40 @@ export const ProfileDefaultsSection = ({ profile }: Props) => {
                 <DetailValue>{defaults.locality}</DetailValue>
               </Detail>
             )}
+            {defaults.domainComponents && defaults.domainComponents.length > 0 && (
+              <Detail>
+                <DetailLabel>Domain Components (DC)</DetailLabel>
+                <DetailValue>
+                  <div className="flex flex-wrap gap-1">
+                    {defaults.domainComponents.map((dc) => (
+                      <Badge key={dc} variant="neutral">
+                        {dc}
+                      </Badge>
+                    ))}
+                  </div>
+                </DetailValue>
+              </Detail>
+            )}
           </div>
+        </>
+      )
+    });
+  }
+
+  if (defaults.customExtensions?.length) {
+    sections.push({
+      id: "customExtensions",
+      node: (
+        <>
+          <p className="mb-3 text-sm font-medium text-foreground">Custom extensions</p>
+          <CustomExtensionList
+            extensions={defaults.customExtensions.map((extension) => ({
+              oid: extension.oid,
+              label: extension.label,
+              critical: extension.critical,
+              displayValue: extension.value ?? "Supplied by the request"
+            }))}
+          />
         </>
       )
     });

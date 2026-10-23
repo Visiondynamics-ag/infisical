@@ -13,7 +13,8 @@ const RouteComponent = withPermission(
   },
   {
     action: OrgPermissionActions.Read,
-    subject: OrgPermissionSubjects.ProjectTemplates
+    subject: OrgPermissionSubjects.ProjectTemplates,
+    accessRestrictedMode: "dialog"
   }
 );
 
@@ -31,7 +32,7 @@ export const Route = createFileRoute(
         })
       },
       {
-        label: "Project Templates"
+        label: "Project Template"
       }
     ]
   })

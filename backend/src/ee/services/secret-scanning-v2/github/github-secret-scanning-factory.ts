@@ -5,13 +5,14 @@ import { scanContentAndGetFindings } from "@app/ee/services/secret-scanning/secr
 import { SecretMatch } from "@app/ee/services/secret-scanning/secret-scanning-queue/secret-scanning-queue-types";
 import {
   SecretScanningDataSource,
-  SecretScanningFindingSeverity,
-  SecretScanningResource
+  SecretScanningFindingSeverity
 } from "@app/ee/services/secret-scanning-v2/secret-scanning-v2-enums";
 import {
+  assertProviderRepositorySizeWithinLimit,
   cloneRepository,
   convertPatchLineToFileLineNumber,
-  replaceNonChangesWithNewlines
+  replaceNonChangesWithNewlines,
+  toFindingDetails
 } from "@app/ee/services/secret-scanning-v2/secret-scanning-v2-fns";
 import {
   TSecretScanningFactoryGetDiffScanFindingsPayload,
@@ -20,12 +21,12 @@ import {
   TSecretScanningFactoryInitialize,
   TSecretScanningFactoryListRawResources,
   TSecretScanningFactoryPostInitialization,
+  TSecretScanningFactorySetupWebhook,
   TSecretScanningFactoryTeardown,
   TSecretScanningFactoryValidateConfigUpdate
 } from "@app/ee/services/secret-scanning-v2/secret-scanning-v2-types";
 import { getConfig } from "@app/lib/config/env";
 import { BadRequestError } from "@app/lib/errors";
-import { titleCaseToCamelCase } from "@app/lib/fn";
 import { BasicRepositoryRegex } from "@app/lib/regex";
 import { listGitHubRadarRepositories, TGitHubRadarConnection } from "@app/services/app-connection/github-radar";
 
@@ -68,6 +69,9 @@ export const GitHubSecretScanningFactory = () => {
     // no teardown required
   };
 
+  // Push events arrive through the GitHub App installation, so there is no webhook to create.
+  const setupWebhook: TSecretScanningFactorySetupWebhook<TGitHubDataSourceWithConnection> = async () => undefined;
+
   const validateConfigUpdate: TSecretScanningFactoryValidateConfigUpdate<
     TGitHubDataSourceInput["config"],
     TGitHubDataSourceWithConnection
@@ -78,24 +82,11 @@ export const GitHubSecretScanningFactory = () => {
   const listRawResources: TSecretScanningFactoryListRawResources<TGitHubDataSourceWithConnection> = async (
     dataSource
   ) => {
-    const {
-      connection,
-      config: { includeRepos }
-    } = dataSource;
+    const repos = await listGitHubRadarRepositories(dataSource.connection);
 
-    const repos = await listGitHubRadarRepositories(connection);
-
-    const filteredRepos: typeof repos = [];
-    if (includeRepos.includes("*")) {
-      filteredRepos.push(...repos);
-    } else {
-      filteredRepos.push(...repos.filter((repo) => includeRepos.includes(repo.full_name)));
-    }
-
-    return filteredRepos.map(({ id, full_name }) => ({
+    return repos.map(({ id, full_name }) => ({
       name: full_name,
-      externalId: id.toString(),
-      type: SecretScanningResource.Repository
+      externalId: id.toString()
     }));
   };
 
@@ -131,6 +122,15 @@ export const GitHubSecretScanningFactory = () => {
       throw new Error("Invalid GitHub repository name");
     }
 
+    const [owner, repo] = resourceName.split("/");
+
+    // Checked before the clone: measuring afterwards means the network, wall clock and ephemeral
+    // disk have already been spent. GitHub reports `size` in KB.
+    await assertProviderRepositorySizeWithinLimit(resourceName, async () => {
+      const { data: repository } = await octokit.repos.get({ owner, repo });
+      return repository.size == null ? null : repository.size * 1024;
+    });
+
     await cloneRepository({
       cloneUrl: `https://x-access-token:${token}@github.com/${resourceName}.git`,
       repoPath
@@ -144,8 +144,7 @@ export const GitHubSecretScanningFactory = () => {
   > = ({ repository }) => {
     return {
       name: repository.full_name,
-      externalId: repository.id.toString(),
-      type: SecretScanningResource.Repository
+      externalId: repository.id.toString()
     };
   };
 
@@ -215,7 +214,10 @@ export const GitHubSecretScanningFactory = () => {
               Message: commit.message,
               Fingerprint: `${commit.id}:${file.filename}:${finding.RuleID}:${startLine}:${startColumn}`,
               Date: commit.timestamp,
-              Link: `https://github.com/${resourceName}/blob/${commit.id}/${file.filename}#L${startLine}`
+              Attributes: {
+                ...finding.Attributes,
+                url: `https://github.com/${resourceName}/blob/${commit.id}/${file.filename}#L${startLine}`
+              }
             };
           });
 
@@ -224,19 +226,12 @@ export const GitHubSecretScanningFactory = () => {
       }
     }
 
-    return allFindings.map(
-      ({
-        // discard match and secret as we don't want to store
-        Match,
-        Secret,
-        ...finding
-      }) => ({
-        details: titleCaseToCamelCase(finding),
-        fingerprint: finding.Fingerprint,
-        severity: SecretScanningFindingSeverity.High,
-        rule: finding.RuleID
-      })
-    );
+    return allFindings.map((finding) => ({
+      details: toFindingDetails(finding),
+      fingerprint: finding.Fingerprint,
+      severity: SecretScanningFindingSeverity.High,
+      rule: finding.RuleID
+    }));
   };
 
   return {
@@ -247,6 +242,7 @@ export const GitHubSecretScanningFactory = () => {
     getDiffScanResourcePayload,
     getDiffScanFindingsPayload,
     teardown,
+    setupWebhook,
     validateConfigUpdate
   };
 };

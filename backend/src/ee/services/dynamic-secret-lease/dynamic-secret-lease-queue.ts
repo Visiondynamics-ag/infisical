@@ -3,6 +3,7 @@ import { getConfig } from "@app/lib/config/env";
 import { applyJitter } from "@app/lib/delay";
 import { DisableRotationErrors, NotFoundError } from "@app/lib/errors";
 import { logger } from "@app/lib/logger";
+import { recordDynamicSecretOrphanedLeaseMetric } from "@app/lib/telemetry/metrics";
 import { QueueJobs, QueueName, TQueueServiceFactory } from "@app/queue";
 import { TIdentityDALFactory } from "@app/services/identity/identity-dal";
 import { TKmsServiceFactory } from "@app/services/kms/kms-service";
@@ -17,6 +18,7 @@ import { TDynamicSecretDALFactory } from "../dynamic-secret/dynamic-secret-dal";
 import { DynamicSecretStatus } from "../dynamic-secret/dynamic-secret-types";
 import { DynamicSecretProviders, TDynamicProviderFns } from "../dynamic-secret/providers/models";
 import { TDynamicSecretLeaseDALFactory } from "./dynamic-secret-lease-dal";
+import { decryptLeaseData } from "./dynamic-secret-lease-fns";
 import { TDynamicSecretLeaseConfig } from "./dynamic-secret-lease-types";
 
 type TDynamicSecretLeaseQueueServiceFactoryDep = {
@@ -141,6 +143,7 @@ export const dynamicSecretLeaseQueueServiceFactory = ({
     data: { leaseId: string; dynamicSecretId: string; isRetry?: boolean } | { dynamicSecretCfgId: string },
     retryCount?: number
   ): Promise<void> => {
+    let providerType: string | undefined;
     try {
       if (jobName === QueueJobs.DynamicSecretRevocation) {
         const { leaseId } = data as { leaseId: string };
@@ -163,14 +166,21 @@ export const dynamicSecretLeaseQueueServiceFactory = ({
         });
 
         const dynamicSecretCfg = dynamicSecretLease.dynamicSecret;
+        providerType = dynamicSecretCfg.type;
         const selectedProvider = dynamicSecretProviders[dynamicSecretCfg.type as DynamicSecretProviders];
         const decryptedStoredInput = JSON.parse(
           secretManagerDecryptor({ cipherTextBlob: dynamicSecretCfg.encryptedInput }).toString()
         ) as object;
 
-        await selectedProvider.revoke(decryptedStoredInput, dynamicSecretLease.externalEntityId, {
-          projectId: folder.projectId
-        });
+        await selectedProvider.revoke(
+          decryptedStoredInput,
+          dynamicSecretLease.externalEntityId,
+          {
+            projectId: folder.projectId,
+            leaseData: decryptLeaseData(secretManagerDecryptor, dynamicSecretLease.encryptedLeaseData)
+          },
+          dynamicSecretLease.config as TDynamicSecretLeaseConfig
+        );
         await dynamicSecretLeaseDAL.deleteById(dynamicSecretLease.id);
         return;
       }
@@ -183,6 +193,7 @@ export const dynamicSecretLeaseQueueServiceFactory = ({
           logger.info(`Failed to find dynamic secret with ${dynamicSecretCfgId}`);
           return;
         }
+        providerType = dynamicSecretCfg.type;
         if ((dynamicSecretCfg.status as DynamicSecretStatus) !== DynamicSecretStatus.Deleting) {
           logger.info(`Dynamic secret ${dynamicSecretCfgId} is not in deleting status`);
           return;
@@ -208,12 +219,13 @@ export const dynamicSecretLeaseQueueServiceFactory = ({
 
           await Promise.all(dynamicSecretLeases.map(({ id }) => unsetLeaseRevocation(id)));
           await Promise.all(
-            dynamicSecretLeases.map(({ externalEntityId, config }) =>
+            dynamicSecretLeases.map(({ externalEntityId, config, encryptedLeaseData }) =>
               selectedProvider.revoke(
                 decryptedStoredInput,
                 externalEntityId,
                 {
-                  projectId: folder.projectId
+                  projectId: folder.projectId,
+                  leaseData: decryptLeaseData(secretManagerDecryptor, encryptedLeaseData)
                 },
                 config as TDynamicSecretLeaseConfig
               )
@@ -233,6 +245,9 @@ export const dynamicSecretLeaseQueueServiceFactory = ({
           status: DynamicSecretStatus.FailedDeletion,
           statusDetails: (error as Error)?.message?.slice(0, 255)
         });
+        if (providerType) {
+          recordDynamicSecretOrphanedLeaseMetric({ provider: providerType });
+        }
       }
 
       if (jobName === QueueJobs.DynamicSecretRevocation) {
@@ -260,6 +275,10 @@ export const dynamicSecretLeaseQueueServiceFactory = ({
 
             // we dont have to stop the retry job, because if we hit this point, its the last attempt and BullMQ will stop it after this point
             await queueService.stopJobById(QueueName.DynamicSecretRevocation, leaseId);
+
+            if (providerType) {
+              recordDynamicSecretOrphanedLeaseMetric({ provider: providerType });
+            }
 
             await $queueDynamicSecretLeaseRevocationFailedEmail(leaseId, dynamicSecretId);
           }

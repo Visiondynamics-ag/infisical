@@ -1,5 +1,4 @@
 import { Controller, useForm } from "react-hook-form";
-import { SingleValue } from "react-select";
 import { subject } from "@casl/ability";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { PencilIcon } from "lucide-react";
@@ -8,27 +7,37 @@ import { z } from "zod";
 import { createNotification } from "@app/components/notifications";
 import { ProjectPermissionCan } from "@app/components/permissions";
 import {
-  Button as ButtonV2,
-  FilterableSelect,
-  FormControl,
-  Input,
-  Modal,
-  ModalClose,
-  ModalContent
-} from "@app/components/v2";
-import {
   Badge,
+  Button,
   Card,
   CardAction,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
+  Combobox,
   Detail,
   DetailGroup,
   DetailLabel,
   DetailValue,
-  IconButton
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldLabel,
+  IconButton,
+  Input,
+  Sheet,
+  SheetClose,
+  SheetContent,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle
 } from "@app/components/v3";
 import {
   ProjectPermissionCertificateAuthorityActions,
@@ -43,20 +52,17 @@ import {
   useGetCaSigningConfig,
   useUpdateCaSigningConfig
 } from "@app/hooks/api";
-import {
-  TAvailableAppConnection,
-  useListAvailableAppConnections
-} from "@app/hooks/api/appConnections";
+import { useListAvailableAppConnections } from "@app/hooks/api/appConnections";
+import { useAdcsConnectionListCertificateTemplates } from "@app/hooks/api/appConnections/adcs";
 import { useAzureAdcsConnectionListTemplates } from "@app/hooks/api/appConnections/azure-adcs";
 import { AppConnection } from "@app/hooks/api/appConnections/enums";
 import {
-  TVenafiApplication,
-  TVenafiIssuingTemplate,
   useVenafiConnectionListApplications,
   useVenafiConnectionListIssuingTemplates
 } from "@app/hooks/api/appConnections/venafi";
 import { TInternalCertificateAuthority } from "@app/hooks/api/ca/types";
 import { usePopUp } from "@app/hooks/usePopUp";
+import { useConnectionCreation } from "@app/pages/cert-manager/CertificateAuthoritiesPage/components/CaInstallCertModal/useConnectionCreation";
 
 type Props = {
   caId: string;
@@ -66,7 +72,8 @@ const signingTypeLabels: Record<CaSigningConfigType, string> = {
   [CaSigningConfigType.INTERNAL]: "Internal (Infisical CA)",
   [CaSigningConfigType.MANUAL]: "Manual",
   [CaSigningConfigType.VENAFI]: "Venafi TLS Protect Cloud",
-  [CaSigningConfigType.AZURE_ADCS]: "Azure AD CS"
+  [CaSigningConfigType.AZURE_ADCS]: "Azure AD CS (Web Enrollment)",
+  [CaSigningConfigType.ADCS]: "ADCS"
 };
 
 const getSigningTypeBadgeVariant = (type: CaSigningConfigType) => {
@@ -88,7 +95,7 @@ const editSchema = z.object({
 
 type EditFormData = z.infer<typeof editSchema>;
 
-const adcsEditSchema = z.object({
+const azureAdcsEditSchema = z.object({
   appConnectionId: z.string().min(1, "App connection is required"),
   template: z.string().min(1, "Certificate template is required"),
   validityPeriod: z.coerce
@@ -99,7 +106,15 @@ const adcsEditSchema = z.object({
     .or(z.literal(""))
 });
 
-type AdcsEditFormData = z.infer<typeof adcsEditSchema>;
+type AzureAdcsEditFormData = z.infer<typeof azureAdcsEditSchema>;
+
+// Native ADCS derives validity from the CA template, so there is no validity period field.
+const nativeAdcsEditSchema = z.object({
+  appConnectionId: z.string().min(1, "App connection is required"),
+  template: z.string().min(1, "Certificate template is required")
+});
+
+type NativeAdcsEditFormData = z.infer<typeof nativeAdcsEditSchema>;
 
 export const CaSigningConfigSection = ({ caId }: Props) => {
   const { currentProject } = useProject();
@@ -157,19 +172,20 @@ export const CaSigningConfigSection = ({ caId }: Props) => {
       }
     );
 
-  const { data: availableAdcsConnections, isPending: isAdcsConnectionsPending } =
+  const { data: availableAzureAdcsConnections, isPending: isAzureAdcsConnectionsPending } =
     useListAvailableAppConnections(AppConnection.AzureADCS, currentProject.id, {
       enabled: signingConfig?.type === CaSigningConfigType.AZURE_ADCS
     });
 
   const {
-    control: adcsControl,
-    handleSubmit: handleAdcsSubmit,
-    reset: adcsReset,
-    watch: adcsWatch,
-    formState: { isSubmitting: isAdcsSubmitting }
-  } = useForm<AdcsEditFormData>({
-    resolver: zodResolver(adcsEditSchema),
+    control: azureAdcsControl,
+    handleSubmit: handleAzureAdcsSubmit,
+    reset: azureAdcsReset,
+    setValue: azureAdcsSetValue,
+    watch: azureAdcsWatch,
+    formState: { isSubmitting: isAzureAdcsSubmitting }
+  } = useForm<AzureAdcsEditFormData>({
+    resolver: zodResolver(azureAdcsEditSchema),
     values: {
       appConnectionId: signingConfig?.appConnectionId ?? "",
       template: (signingConfig?.destinationConfig?.template as string) ?? "",
@@ -177,19 +193,64 @@ export const CaSigningConfigSection = ({ caId }: Props) => {
     }
   });
 
-  const selectedAdcsConnectionId = adcsWatch("appConnectionId");
+  const selectedAzureAdcsConnectionId = azureAdcsWatch("appConnectionId");
 
-  const { data: adcsTemplates = [], isPending: isAdcsTemplatesLoading } =
-    useAzureAdcsConnectionListTemplates(selectedAdcsConnectionId ?? "", {
-      enabled: !!selectedAdcsConnectionId && popUp.editSigningConfig.isOpen
+  const { data: azureAdcsTemplates = [], isPending: isAzureAdcsTemplatesLoading } =
+    useAzureAdcsConnectionListTemplates(selectedAzureAdcsConnectionId ?? "", {
+      enabled: !!selectedAzureAdcsConnectionId && popUp.editSigningConfig.isOpen
     });
+
+  const { data: availableNativeAdcsConnections, isPending: isNativeAdcsConnectionsPending } =
+    useListAvailableAppConnections(AppConnection.ADCS, currentProject.id, {
+      enabled: signingConfig?.type === CaSigningConfigType.ADCS
+    });
+
+  const {
+    control: nativeAdcsControl,
+    handleSubmit: handleNativeAdcsSubmit,
+    reset: nativeAdcsReset,
+    setValue: nativeAdcsSetValue,
+    watch: nativeAdcsWatch,
+    formState: { isSubmitting: isNativeAdcsSubmitting }
+  } = useForm<NativeAdcsEditFormData>({
+    resolver: zodResolver(nativeAdcsEditSchema),
+    values: {
+      appConnectionId: signingConfig?.appConnectionId ?? "",
+      template: (signingConfig?.destinationConfig?.template as string) ?? ""
+    }
+  });
+
+  const selectedNativeAdcsConnectionId = nativeAdcsWatch("appConnectionId");
+
+  const { data: nativeAdcsTemplates = [], isPending: isNativeAdcsTemplatesLoading } =
+    useAdcsConnectionListCertificateTemplates(selectedNativeAdcsConnectionId ?? "", {
+      enabled: !!selectedNativeAdcsConnectionId && popUp.editSigningConfig.isOpen
+    });
+
+  const venafiConnectionCreation = useConnectionCreation(AppConnection.Venafi, (connection) => {
+    setValue("appConnectionId", connection.id, { shouldDirty: true });
+    setValue("applicationId", "");
+    setValue("issuingTemplateId", "");
+  });
+  const azureAdcsConnectionCreation = useConnectionCreation(
+    AppConnection.AzureADCS,
+    (connection) => {
+      azureAdcsSetValue("appConnectionId", connection.id, { shouldDirty: true });
+      azureAdcsSetValue("template", "", { shouldDirty: true });
+    }
+  );
+  const nativeAdcsConnectionCreation = useConnectionCreation(AppConnection.ADCS, (connection) => {
+    nativeAdcsSetValue("appConnectionId", connection.id, { shouldDirty: true });
+    nativeAdcsSetValue("template", "", { shouldDirty: true });
+  });
 
   if (!ca || ca.status === CaStatus.PENDING_CERTIFICATE || !signingConfig) {
     return null;
   }
 
   const isVenafi = signingConfig.type === CaSigningConfigType.VENAFI;
-  const isAdcs = signingConfig.type === CaSigningConfigType.AZURE_ADCS;
+  const isAzureAdcs = signingConfig.type === CaSigningConfigType.AZURE_ADCS;
+  const isNativeAdcs = signingConfig.type === CaSigningConfigType.ADCS;
 
   const onEditSubmit = async ({
     appConnectionId,
@@ -226,7 +287,7 @@ export const CaSigningConfigSection = ({ caId }: Props) => {
         <CardHeader className="border-b">
           <CardTitle>Signing Configuration</CardTitle>
           <CardDescription>How this CA&apos;s certificate is signed</CardDescription>
-          {(isVenafi || isAdcs) && ca?.name && (
+          {(isVenafi || isAzureAdcs || isNativeAdcs) && ca?.name && (
             <CardAction>
               <ProjectPermissionCan
                 I={ProjectPermissionCertificateAuthorityActions.Edit}
@@ -282,7 +343,7 @@ export const CaSigningConfigSection = ({ caId }: Props) => {
               </>
             )}
 
-            {isAdcs && signingConfig.destinationConfig && (
+            {isAzureAdcs && signingConfig.destinationConfig && (
               <>
                 <Detail>
                   <DetailLabel>Certificate Template</DetailLabel>
@@ -298,22 +359,33 @@ export const CaSigningConfigSection = ({ caId }: Props) => {
                 )}
               </>
             )}
+
+            {isNativeAdcs && signingConfig.destinationConfig && (
+              <Detail>
+                <DetailLabel>Certificate Template</DetailLabel>
+                <DetailValue>{signingConfig.destinationConfig.template as string}</DetailValue>
+              </Detail>
+            )}
           </DetailGroup>
         </CardContent>
       </Card>
 
-      {isAdcs && (
-        <Modal
-          isOpen={popUp.editSigningConfig.isOpen}
+      {isAzureAdcs && (
+        <Sheet
+          open={popUp.editSigningConfig.isOpen}
           onOpenChange={(isOpen) => {
             handlePopUpToggle("editSigningConfig", isOpen);
-            if (!isOpen) adcsReset();
+            if (!isOpen) azureAdcsReset();
           }}
         >
-          <ModalContent title="Edit Signing Configuration" bodyClassName="overflow-visible">
+          <SheetContent size="form" isPending={isAzureAdcsSubmitting}>
+            <SheetHeader>
+              <SheetTitle>Edit Signing Configuration</SheetTitle>
+            </SheetHeader>
             <form
-              onSubmit={handleAdcsSubmit(
-                async ({ appConnectionId, template, validityPeriod }: AdcsEditFormData) => {
+              className="flex min-h-0 flex-1 flex-col"
+              onSubmit={handleAzureAdcsSubmit(
+                async ({ appConnectionId, template, validityPeriod }: AzureAdcsEditFormData) => {
                   try {
                     await updateSigningConfig({
                       caId,
@@ -337,227 +409,367 @@ export const CaSigningConfigSection = ({ caId }: Props) => {
                 }
               )}
             >
+              <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-4">
+                <Controller
+                  control={azureAdcsControl}
+                  name="appConnectionId"
+                  render={({ field: { onChange, value }, fieldState: { error } }) => (
+                    <Field>
+                      <FieldLabel htmlFor="signing-config-azure-ad-cs-connection">
+                        Azure AD CS Connection <span className="text-danger">*</span>
+                      </FieldLabel>
+                      <Combobox
+                        isError={Boolean(error)}
+                        isClearable={false}
+                        id="signing-config-azure-ad-cs-connection"
+                        creation={azureAdcsConnectionCreation}
+                        isLoading={isAzureAdcsConnectionsPending}
+                        value={(availableAzureAdcsConnections || []).find(
+                          (conn) => conn.id === value
+                        )}
+                        onValueChange={(selected) => {
+                          onChange(selected.id);
+                          azureAdcsSetValue("template", "", { shouldDirty: true });
+                        }}
+                        options={availableAzureAdcsConnections || []}
+                        placeholder="Select an Azure AD CS connection..."
+                        getOptionLabel={(option) => option.name}
+                        getOptionValue={(option) => option.id}
+                      />
+                      <FieldError>{error?.message}</FieldError>
+                    </Field>
+                  )}
+                />
+                <Controller
+                  control={azureAdcsControl}
+                  name="template"
+                  render={({ field: { onChange, value }, fieldState: { error } }) => (
+                    <Field>
+                      <FieldLabel htmlFor="signing-config-certificate-template">
+                        Certificate Template <span className="text-danger">*</span>
+                      </FieldLabel>
+                      <Combobox
+                        isError={Boolean(error)}
+                        isClearable={false}
+                        id="signing-config-certificate-template"
+                        isLoading={isAzureAdcsTemplatesLoading && !!selectedAzureAdcsConnectionId}
+                        isDisabled={!selectedAzureAdcsConnectionId}
+                        value={
+                          azureAdcsTemplates.find((t) => t === value)
+                            ? { label: value, value }
+                            : null
+                        }
+                        onValueChange={(selected) => {
+                          onChange(selected.value);
+                        }}
+                        options={azureAdcsTemplates.map((t) => ({ label: t, value: t }))}
+                        placeholder={
+                          selectedAzureAdcsConnectionId
+                            ? "Select a template..."
+                            : "Select a connection first"
+                        }
+                        getOptionLabel={(option) => option.label}
+                        getOptionValue={(option) => option.value}
+                      />
+                      <FieldError>{error?.message}</FieldError>
+                    </Field>
+                  )}
+                />
+                <Controller
+                  control={azureAdcsControl}
+                  name="validityPeriod"
+                  render={({ field, fieldState: { error } }) => (
+                    <Field>
+                      <FieldLabel htmlFor="signing-config-validity-period-days">
+                        Validity Period (Days)
+                      </FieldLabel>
+                      <Input
+                        id="signing-config-validity-period-days"
+                        isError={Boolean(error)}
+                        {...field}
+                        type="number"
+                        placeholder="365"
+                      />
+                      <FieldDescription>
+                        Number of days the certificate should be valid
+                      </FieldDescription>
+                      <FieldError>{error?.message}</FieldError>
+                    </Field>
+                  )}
+                />
+              </div>
+              <SheetFooter>
+                <SheetClose asChild>
+                  <Button variant="ghost">Cancel</Button>
+                </SheetClose>
+                <Button type="submit" variant="project" isPending={isAzureAdcsSubmitting}>
+                  Save
+                </Button>
+              </SheetFooter>
+            </form>
+          </SheetContent>
+        </Sheet>
+      )}
+
+      {isNativeAdcs && (
+        <Dialog
+          open={popUp.editSigningConfig.isOpen}
+          onOpenChange={(isOpen) => {
+            handlePopUpToggle("editSigningConfig", isOpen);
+            if (!isOpen) nativeAdcsReset();
+          }}
+        >
+          <DialogContent isPending={isNativeAdcsSubmitting}>
+            <DialogHeader>
+              <DialogTitle>Edit Signing Configuration</DialogTitle>
+            </DialogHeader>
+            <form
+              className="flex flex-col gap-6"
+              onSubmit={handleNativeAdcsSubmit(
+                async ({ appConnectionId, template }: NativeAdcsEditFormData) => {
+                  try {
+                    await updateSigningConfig({
+                      caId,
+                      appConnectionId,
+                      destinationConfig: {
+                        template
+                      }
+                    });
+                    createNotification({
+                      text: "Signing configuration updated",
+                      type: "success"
+                    });
+                    handlePopUpToggle("editSigningConfig", false);
+                  } catch {
+                    createNotification({
+                      text: "Failed to update signing configuration",
+                      type: "error"
+                    });
+                  }
+                }
+              )}
+            >
               <Controller
-                control={adcsControl}
+                control={nativeAdcsControl}
                 name="appConnectionId"
                 render={({ field: { onChange, value }, fieldState: { error } }) => (
-                  <FormControl
-                    label="Azure AD CS Connection"
-                    errorText={error?.message}
-                    isError={Boolean(error)}
-                    isRequired
-                  >
-                    <FilterableSelect
-                      isLoading={isAdcsConnectionsPending}
-                      value={(availableAdcsConnections || []).find((conn) => conn.id === value)}
-                      onChange={(option) => {
-                        const selected = option as SingleValue<TAvailableAppConnection>;
-                        onChange(selected?.id ?? "");
+                  <Field>
+                    <FieldLabel htmlFor="signing-config-adcs-connection">
+                      ADCS Connection <span className="text-danger">*</span>
+                    </FieldLabel>
+                    <Combobox
+                      isError={Boolean(error)}
+                      isClearable={false}
+                      id="signing-config-adcs-connection"
+                      creation={nativeAdcsConnectionCreation}
+                      isLoading={isNativeAdcsConnectionsPending}
+                      value={(availableNativeAdcsConnections || []).find(
+                        (conn) => conn.id === value
+                      )}
+                      onValueChange={(selected) => {
+                        onChange(selected.id);
+                        nativeAdcsSetValue("template", "", { shouldDirty: true });
                       }}
-                      options={availableAdcsConnections || []}
-                      placeholder="Select an Azure AD CS connection..."
+                      options={availableNativeAdcsConnections || []}
+                      placeholder="Select an ADCS connection..."
                       getOptionLabel={(option) => option.name}
                       getOptionValue={(option) => option.id}
                     />
-                  </FormControl>
+                    <FieldError>{error?.message}</FieldError>
+                  </Field>
                 )}
               />
               <Controller
-                control={adcsControl}
+                control={nativeAdcsControl}
                 name="template"
                 render={({ field: { onChange, value }, fieldState: { error } }) => (
-                  <FormControl
-                    label="Certificate Template"
-                    errorText={error?.message}
-                    isError={Boolean(error)}
-                    isRequired
-                  >
-                    <FilterableSelect
-                      isLoading={isAdcsTemplatesLoading && !!selectedAdcsConnectionId}
-                      isDisabled={!selectedAdcsConnectionId}
+                  <Field>
+                    <FieldLabel htmlFor="signing-config-certificate-template-2">
+                      Certificate Template <span className="text-danger">*</span>
+                    </FieldLabel>
+                    <Combobox
+                      isError={Boolean(error)}
+                      isClearable={false}
+                      id="signing-config-certificate-template-2"
+                      isLoading={isNativeAdcsTemplatesLoading && !!selectedNativeAdcsConnectionId}
+                      isDisabled={!selectedNativeAdcsConnectionId}
                       value={
-                        adcsTemplates.find((t) => t === value) ? { label: value, value } : null
+                        nativeAdcsTemplates.find((t) => t.name === value)
+                          ? { label: value, value }
+                          : null
                       }
-                      onChange={(option) => {
-                        const selected = option as SingleValue<{ label: string; value: string }>;
-                        onChange(selected?.value ?? "");
+                      onValueChange={(selected) => {
+                        onChange(selected.value);
                       }}
-                      options={adcsTemplates.map((t) => ({ label: t, value: t }))}
+                      options={nativeAdcsTemplates.map((t) => ({ label: t.name, value: t.name }))}
                       placeholder={
-                        selectedAdcsConnectionId
+                        selectedNativeAdcsConnectionId
                           ? "Select a template..."
                           : "Select a connection first"
                       }
                       getOptionLabel={(option) => option.label}
                       getOptionValue={(option) => option.value}
                     />
-                  </FormControl>
+                    <FieldError>{error?.message}</FieldError>
+                  </Field>
                 )}
               />
-              <Controller
-                control={adcsControl}
-                name="validityPeriod"
-                render={({ field, fieldState: { error } }) => (
-                  <FormControl
-                    label="Validity Period (Days)"
-                    errorText={error?.message}
-                    isError={Boolean(error)}
-                    helperText="Number of days the certificate should be valid"
-                  >
-                    <Input {...field} type="number" placeholder="365" />
-                  </FormControl>
-                )}
-              />
-              <div className="flex w-full justify-between gap-4 pt-4">
-                <ModalClose asChild>
-                  <ButtonV2 colorSchema="secondary" variant="plain">
-                    Cancel
-                  </ButtonV2>
-                </ModalClose>
-                <ButtonV2
-                  isLoading={isAdcsSubmitting}
-                  isDisabled={isAdcsSubmitting}
-                  type="submit"
-                  colorSchema="secondary"
-                >
+              <DialogFooter>
+                <DialogClose asChild>
+                  <Button variant="ghost">Cancel</Button>
+                </DialogClose>
+                <Button type="submit" variant="project" isPending={isNativeAdcsSubmitting}>
                   Save
-                </ButtonV2>
-              </div>
+                </Button>
+              </DialogFooter>
             </form>
-          </ModalContent>
-        </Modal>
+          </DialogContent>
+        </Dialog>
       )}
 
       {isVenafi && (
-        <Modal
-          isOpen={popUp.editSigningConfig.isOpen}
+        <Sheet
+          open={popUp.editSigningConfig.isOpen}
           onOpenChange={(isOpen) => {
             handlePopUpToggle("editSigningConfig", isOpen);
             if (!isOpen) reset();
           }}
         >
-          <ModalContent title="Edit Signing Configuration" bodyClassName="overflow-visible">
-            <form onSubmit={handleSubmit(onEditSubmit)}>
-              <Controller
-                control={control}
-                name="appConnectionId"
-                render={({ field: { onChange, value }, fieldState: { error } }) => (
-                  <FormControl
-                    label="Venafi Connection"
-                    errorText={error?.message}
-                    isError={Boolean(error)}
-                    isRequired
-                  >
-                    <FilterableSelect
-                      isLoading={isVenafiPending}
-                      value={(availableVenafiConnections || []).find((conn) => conn.id === value)}
-                      onChange={(option) => {
-                        const selected = option as SingleValue<TAvailableAppConnection>;
-                        onChange(selected?.id ?? "");
-                        setValue("applicationId", "");
-                        setValue("issuingTemplateId", "");
-                      }}
-                      options={availableVenafiConnections || []}
-                      placeholder="Select a Venafi connection..."
-                      getOptionLabel={(option) => option.name}
-                      getOptionValue={(option) => option.id}
-                    />
-                  </FormControl>
-                )}
-              />
-              <Controller
-                control={control}
-                name="applicationId"
-                render={({ field: { onChange, value }, fieldState: { error } }) => (
-                  <FormControl
-                    label="Application"
-                    errorText={error?.message}
-                    isError={Boolean(error)}
-                    isRequired
-                  >
-                    <FilterableSelect
-                      isLoading={isApplicationsLoading && !!selectedConnectionId}
-                      isDisabled={!selectedConnectionId}
-                      value={applications.find((app) => app.id === value)}
-                      onChange={(option) => {
-                        const selected = option as SingleValue<TVenafiApplication>;
-                        onChange(selected?.id ?? "");
-                        setValue("issuingTemplateId", "");
-                      }}
-                      options={applications}
-                      placeholder={
-                        selectedConnectionId
-                          ? "Select an application..."
-                          : "Select a connection first"
-                      }
-                      getOptionLabel={(option) => option.name}
-                      getOptionValue={(option) => option.id}
-                    />
-                  </FormControl>
-                )}
-              />
-              <Controller
-                control={control}
-                name="issuingTemplateId"
-                render={({ field: { onChange, value }, fieldState: { error } }) => (
-                  <FormControl
-                    label="Issuing Template"
-                    errorText={error?.message}
-                    isError={Boolean(error)}
-                    isRequired
-                  >
-                    <FilterableSelect
-                      isLoading={isTemplatesLoading && !!selectedApplicationId}
-                      isDisabled={!selectedApplicationId}
-                      value={issuingTemplates.find((tmpl) => tmpl.id === value)}
-                      onChange={(option) => {
-                        const selected = option as SingleValue<TVenafiIssuingTemplate>;
-                        onChange(selected?.id ?? "");
-                      }}
-                      options={issuingTemplates}
-                      placeholder={
-                        selectedApplicationId
-                          ? "Select an issuing template..."
-                          : "Select an application first"
-                      }
-                      getOptionLabel={(option) => option.name}
-                      getOptionValue={(option) => option.id}
-                    />
-                  </FormControl>
-                )}
-              />
-              <Controller
-                control={control}
-                name="validityPeriod"
-                render={({ field, fieldState: { error } }) => (
-                  <FormControl
-                    label="Validity Period (Days)"
-                    errorText={error?.message}
-                    isError={Boolean(error)}
-                    helperText="Number of days the certificate should be valid"
-                  >
-                    <Input {...field} type="number" placeholder="365" />
-                  </FormControl>
-                )}
-              />
-              <div className="flex w-full justify-between gap-4 pt-4">
-                <ModalClose asChild>
-                  <ButtonV2 colorSchema="secondary" variant="plain">
-                    Cancel
-                  </ButtonV2>
-                </ModalClose>
-                <ButtonV2
-                  isLoading={isSubmitting}
-                  isDisabled={isSubmitting}
-                  type="submit"
-                  colorSchema="secondary"
-                >
-                  Save
-                </ButtonV2>
+          <SheetContent size="form" isPending={isSubmitting}>
+            <SheetHeader>
+              <SheetTitle>Edit Signing Configuration</SheetTitle>
+            </SheetHeader>
+            <form className="flex min-h-0 flex-1 flex-col" onSubmit={handleSubmit(onEditSubmit)}>
+              <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-4">
+                <Controller
+                  control={control}
+                  name="appConnectionId"
+                  render={({ field: { onChange, value }, fieldState: { error } }) => (
+                    <Field>
+                      <FieldLabel htmlFor="signing-config-venafi-connection">
+                        Venafi Connection <span className="text-danger">*</span>
+                      </FieldLabel>
+                      <Combobox
+                        isError={Boolean(error)}
+                        isClearable={false}
+                        id="signing-config-venafi-connection"
+                        creation={venafiConnectionCreation}
+                        isLoading={isVenafiPending}
+                        value={
+                          (availableVenafiConnections || []).find((conn) => conn.id === value) ??
+                          null
+                        }
+                        onValueChange={(selected) => {
+                          onChange(selected.id);
+                          setValue("applicationId", "");
+                          setValue("issuingTemplateId", "");
+                        }}
+                        options={availableVenafiConnections || []}
+                        placeholder="Select a Venafi connection..."
+                        getOptionLabel={(option) => option.name}
+                        getOptionValue={(option) => option.id}
+                      />
+                      <FieldError>{error?.message}</FieldError>
+                    </Field>
+                  )}
+                />
+                <Controller
+                  control={control}
+                  name="applicationId"
+                  render={({ field: { onChange, value }, fieldState: { error } }) => (
+                    <Field>
+                      <FieldLabel htmlFor="signing-config-application">
+                        Application <span className="text-danger">*</span>
+                      </FieldLabel>
+                      <Combobox
+                        isError={Boolean(error)}
+                        isClearable={false}
+                        id="signing-config-application"
+                        isLoading={isApplicationsLoading && !!selectedConnectionId}
+                        isDisabled={!selectedConnectionId}
+                        value={applications.find((app) => app.id === value) ?? null}
+                        onValueChange={(selected) => {
+                          onChange(selected.id);
+                          setValue("issuingTemplateId", "");
+                        }}
+                        options={applications}
+                        placeholder={
+                          selectedConnectionId
+                            ? "Select an application..."
+                            : "Select a connection first"
+                        }
+                        getOptionLabel={(option) => option.name}
+                        getOptionValue={(option) => option.id}
+                      />
+                      <FieldError>{error?.message}</FieldError>
+                    </Field>
+                  )}
+                />
+                <Controller
+                  control={control}
+                  name="issuingTemplateId"
+                  render={({ field: { onChange, value }, fieldState: { error } }) => (
+                    <Field>
+                      <FieldLabel htmlFor="signing-config-issuing-template">
+                        Issuing Template <span className="text-danger">*</span>
+                      </FieldLabel>
+                      <Combobox
+                        isError={Boolean(error)}
+                        isClearable={false}
+                        id="signing-config-issuing-template"
+                        isLoading={isTemplatesLoading && !!selectedApplicationId}
+                        isDisabled={!selectedApplicationId}
+                        value={issuingTemplates.find((tmpl) => tmpl.id === value) ?? null}
+                        onValueChange={(selected) => {
+                          onChange(selected.id);
+                        }}
+                        options={issuingTemplates}
+                        placeholder={
+                          selectedApplicationId
+                            ? "Select an issuing template..."
+                            : "Select an application first"
+                        }
+                        getOptionLabel={(option) => option.name}
+                        getOptionValue={(option) => option.id}
+                      />
+                      <FieldError>{error?.message}</FieldError>
+                    </Field>
+                  )}
+                />
+                <Controller
+                  control={control}
+                  name="validityPeriod"
+                  render={({ field, fieldState: { error } }) => (
+                    <Field>
+                      <FieldLabel htmlFor="signing-config-validity-period-days-2">
+                        Validity Period (Days)
+                      </FieldLabel>
+                      <Input
+                        id="signing-config-validity-period-days-2"
+                        isError={Boolean(error)}
+                        {...field}
+                        type="number"
+                        placeholder="365"
+                      />
+                      <FieldDescription>
+                        Number of days the certificate should be valid
+                      </FieldDescription>
+                      <FieldError>{error?.message}</FieldError>
+                    </Field>
+                  )}
+                />
               </div>
+              <SheetFooter>
+                <SheetClose asChild>
+                  <Button variant="ghost">Cancel</Button>
+                </SheetClose>
+                <Button type="submit" variant="project" isPending={isSubmitting}>
+                  Save
+                </Button>
+              </SheetFooter>
             </form>
-          </ModalContent>
-        </Modal>
+          </SheetContent>
+        </Sheet>
       )}
     </>
   );

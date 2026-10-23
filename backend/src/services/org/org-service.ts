@@ -1,4 +1,4 @@
-import { ForbiddenError } from "@casl/ability";
+import { ForbiddenError, MongoAbility } from "@casl/ability";
 import slugify from "@sindresorhus/slugify";
 import { Knex } from "knex";
 
@@ -7,40 +7,59 @@ import {
   OrganizationActionScope,
   OrgMembershipRole,
   OrgMembershipStatus,
+  ProjectType,
   TableName,
   TOidcConfigs,
   TSamlConfigs
 } from "@app/db/schemas";
+import { bootstrapAgentVaultProject } from "@app/ee/services/agent-vault-project/agent-vault-project-bootstrap";
+import { TAuditLogSettingsServiceFactory } from "@app/ee/services/audit-log/audit-log-settings-service";
+import { TGatewayV2ServiceFactory } from "@app/ee/services/gateway-v2/gateway-v2-service";
 import { TGroupDALFactory } from "@app/ee/services/group/group-dal";
 import { TUserGroupMembershipDALFactory } from "@app/ee/services/group/user-group-membership-dal";
 import { TLdapConfigDALFactory } from "@app/ee/services/ldap-config/ldap-config-dal";
 import { TLicenseServiceFactory } from "@app/ee/services/license/license-service";
 import { TOidcConfigDALFactory } from "@app/ee/services/oidc/oidc-config-dal";
+import { bootstrapPamProject } from "@app/ee/services/pam-project/pam-project-bootstrap";
+import { terminatePamSessionsForUsers } from "@app/ee/services/pam-session/pam-session-access-fns";
+import { TPamSessionDALFactory } from "@app/ee/services/pam-session/pam-session-dal";
 import {
   OrgPermissionActions,
   OrgPermissionGroupActions,
+  OrgPermissionMemberActions,
   OrgPermissionSecretShareAction,
   OrgPermissionSsoActions,
   OrgPermissionSubjects
 } from "@app/ee/services/permission/org-permission";
-import { assertPermissionBoundary } from "@app/ee/services/permission/permission-fns";
+import { assertRoleSetBoundary } from "@app/ee/services/permission/permission-fns";
 import { TPermissionServiceFactory } from "@app/ee/services/permission/permission-service-types";
 import { TSamlConfigDALFactory } from "@app/ee/services/saml-config/saml-config-dal";
+import { bootstrapSecretScanningProject } from "@app/ee/services/secret-scanning-v2/secret-scanning-v2-project-bootstrap";
+import { PgSqlLock } from "@app/keystore/keystore";
 import { getConfig } from "@app/lib/config/env";
 import { crypto } from "@app/lib/crypto/cryptography";
 import { generateUserSrpKeys } from "@app/lib/crypto/srp";
 import { applyJitter } from "@app/lib/dates";
 import { delay as delayMs } from "@app/lib/delay";
-import { BadRequestError, ForbiddenRequestError, NotFoundError, UnauthorizedError } from "@app/lib/errors";
+import {
+  BadRequestError,
+  ConflictError,
+  ForbiddenRequestError,
+  NotFoundError,
+  UnauthorizedError
+} from "@app/lib/errors";
 import { logger } from "@app/lib/logger";
 import { alphaNumericNanoId } from "@app/lib/nanoid";
 import { requestMemoKeys } from "@app/lib/request-context/memo-keys";
 import { requestMemoize } from "@app/lib/request-context/request-memoizer";
+import { AgentVaultIdentities, PamIdentities, SecretIdentities } from "@app/services/license-client";
+import { TUsageMeteringServiceFactory } from "@app/services/license-client/usage";
 import { getDefaultOrgMembershipRoleForUpdateOrg } from "@app/services/org/org-role-fns";
 import { TOrgMembershipDALFactory } from "@app/services/org-membership/org-membership-dal";
 import { TUserAliasDALFactory } from "@app/services/user-alias/user-alias-dal";
 
 import { TAdditionalPrivilegeDALFactory } from "../additional-privilege/additional-privilege-dal";
+import { TAlertChannelRecipientDALFactory } from "../alert/alert-channel-recipient-dal";
 import { TApprovalPolicyDALFactory } from "../approval-policy/approval-policy-dal";
 import { TAuthLoginFactory } from "../auth/auth-login-service";
 import { ActorAuthMethod, ActorType, AuthMethod, AuthModeJwtTokenPayload, AuthTokenType } from "../auth/auth-type";
@@ -50,6 +69,7 @@ import { bootstrapCertManagerProject } from "../cert-manager-instance/cert-manag
 import { TCertificatePolicyDALFactory } from "../certificate-policy/certificate-policy-dal";
 import { TIdentityMetadataDALFactory } from "../identity/identity-metadata-dal";
 import { TMembershipDALFactory } from "../membership/membership-dal";
+import { resolveMembershipRoleSlugs, roleNeedsPrivilegeBoundary } from "../membership/membership-fns";
 import { TMembershipRoleDALFactory } from "../membership/membership-role-dal";
 import { TMembershipUserDALFactory } from "../membership-user/membership-user-dal";
 import { assertWillRetainOrgAdmin } from "../membership-user/membership-user-fns";
@@ -88,7 +108,7 @@ import {
 type TOrgServiceFactoryDep = {
   userAliasDAL: Pick<TUserAliasDALFactory, "delete">;
   secretDAL: Pick<TSecretDALFactory, "find">;
-  secretV2BridgeDAL: Pick<TSecretV2BridgeDALFactory, "find">;
+  secretV2BridgeDAL: Pick<TSecretV2BridgeDALFactory, "find" | "invalidateSecretCacheByProjectId">;
   folderDAL: Pick<TSecretFolderDALFactory, "findByProjectId">;
   orgDAL: TOrgDALFactory;
   roleDAL: TRoleDALFactory;
@@ -117,7 +137,7 @@ type TOrgServiceFactoryDep = {
   permissionService: TPermissionServiceFactory;
   licenseService: Pick<
     TLicenseServiceFactory,
-    "getPlan" | "updateSubscriptionOrgMemberCount" | "generateOrgCustomerId" | "removeOrgCustomer"
+    "getPlan" | "updateSubscriptionOrgMemberCount" | "cancelOrgSubscription"
   >;
   projectBotService: Pick<TProjectBotServiceFactory, "getBotKey">;
   loginService: Pick<TAuthLoginFactory, "generateUserTokens">;
@@ -125,7 +145,12 @@ type TOrgServiceFactoryDep = {
   userGroupMembershipDAL: TUserGroupMembershipDALFactory;
   additionalPrivilegeDAL: TAdditionalPrivilegeDALFactory;
   approvalPolicyDAL: Pick<TApprovalPolicyDALFactory, "deleteUserStepApproversInProjects">;
+  alertChannelRecipientDAL: Pick<TAlertChannelRecipientDALFactory, "pruneOutOfScopeRecipients">;
+  pamSessionDAL: Pick<TPamSessionDALFactory, "findLiveByOrgAndUserIds" | "update">;
+  gatewayV2Service: Pick<TGatewayV2ServiceFactory, "getPAMConnectionDetails">;
   certificatePolicyDAL: Pick<TCertificatePolicyDALFactory, "create">;
+  usageMeteringService: Pick<TUsageMeteringServiceFactory, "emit">;
+  auditLogSettingsService: Pick<TAuditLogSettingsServiceFactory, "invalidateCache">;
 };
 
 export type TOrgServiceFactory = ReturnType<typeof orgServiceFactory>;
@@ -161,7 +186,12 @@ export const orgServiceFactory = ({
   userGroupMembershipDAL,
   additionalPrivilegeDAL,
   approvalPolicyDAL,
-  certificatePolicyDAL
+  alertChannelRecipientDAL,
+  certificatePolicyDAL,
+  usageMeteringService,
+  pamSessionDAL,
+  gatewayV2Service,
+  auditLogSettingsService
 }: TOrgServiceFactoryDep) => {
   /*
    * Get organization details by the organization id
@@ -201,10 +231,23 @@ export const orgServiceFactory = ({
     }
 
     const data = hasSubOrg && subOrg ? subOrg : org;
-    if (!data.userTokenExpiration) {
-      return { ...data, userTokenExpiration: appCfg.JWT_REFRESH_LIFETIME };
-    }
-    return data;
+
+    const pamProjects = await projectDAL.find(
+      { orgId: data.id, type: ProjectType.PAM },
+      { sort: [["createdAt", "desc"]], limit: 1 }
+    );
+
+    const agentVaultProjects = await projectDAL.find(
+      { orgId: data.id, type: ProjectType.AgentVault },
+      { sort: [["createdAt", "desc"]], limit: 1 }
+    );
+
+    return {
+      ...data,
+      userTokenExpiration: data.userTokenExpiration || appCfg.JWT_REFRESH_LIFETIME,
+      pamProjectId: pamProjects[0]?.id ?? null,
+      agentVaultProjectId: agentVaultProjects[0]?.id ?? null
+    };
   };
 
   /*
@@ -242,7 +285,7 @@ export const orgServiceFactory = ({
       scope: OrganizationActionScope.Any
     });
 
-    ForbiddenError.from(permission).throwUnlessCan(OrgPermissionActions.Read, OrgPermissionSubjects.Member);
+    ForbiddenError.from(permission).throwUnlessCan(OrgPermissionMemberActions.Read, OrgPermissionSubjects.Member);
 
     const members = await orgDAL.findAllOrgMembers(orgId);
     return members;
@@ -278,7 +321,7 @@ export const orgServiceFactory = ({
       actorOrgId,
       scope: OrganizationActionScope.Any
     });
-    ForbiddenError.from(permission).throwUnlessCan(OrgPermissionActions.Read, OrgPermissionSubjects.Member);
+    ForbiddenError.from(permission).throwUnlessCan(OrgPermissionMemberActions.Read, OrgPermissionSubjects.Member);
 
     const members = await orgDAL.findOrgMembersByUsername(orgId, emails);
 
@@ -379,7 +422,7 @@ export const orgServiceFactory = ({
       });
     }
 
-    return orgDAL.transaction(async (tx) => {
+    const upgradedOrg = await orgDAL.transaction(async (tx) => {
       const org = await orgDAL.findById(actorOrgId, tx);
       if (org.shouldUseNewPrivilegeSystem) {
         throw new BadRequestError({
@@ -402,6 +445,12 @@ export const orgServiceFactory = ({
         tx
       );
     });
+
+    // Denials only get recorded on the new privilege system, so bust the cache or denials right
+    // after upgrading get missed. Never throws, since the upgrade has already committed.
+    await auditLogSettingsService.invalidateCache(actorOrgId);
+
+    return upgradedOrg;
   };
 
   /*
@@ -428,12 +477,13 @@ export const orgServiceFactory = ({
       secretsProductEnabled,
       pkiProductEnabled,
       kmsProductEnabled,
-      sshProductEnabled,
       scannerProductEnabled,
       shareSecretsProductEnabled,
       maxSharedSecretLifetime,
       maxSharedSecretViewLimit,
       blockDuplicateSecretSyncDestinations,
+      allowCrossProjectSecretSharing,
+      requireGatewayPools,
       secretShareBrandConfig
     }
   }: TUpdateOrgDTO) => {
@@ -472,6 +522,15 @@ export const orgServiceFactory = ({
         throw new BadRequestError({
           message:
             "Failed to update secret share branding due to plan restriction. Upgrade plan to configure custom branding."
+        });
+      }
+    }
+
+    if (requireGatewayPools) {
+      if (!plan.gatewayPool) {
+        throw new BadRequestError({
+          message:
+            "Failed to require gateway pools due to plan restriction. Upgrade to Infisical Enterprise to use gateway pools."
         });
       }
     }
@@ -633,15 +692,22 @@ export const orgServiceFactory = ({
       secretsProductEnabled,
       pkiProductEnabled,
       kmsProductEnabled,
-      sshProductEnabled,
       scannerProductEnabled,
       shareSecretsProductEnabled,
       maxSharedSecretLifetime,
       maxSharedSecretViewLimit,
       blockDuplicateSecretSyncDestinations,
+      allowCrossProjectSecretSharing,
+      requireGatewayPools,
       secretShareBrandConfig
     });
     if (!org) throw new NotFoundError({ message: `Organization with ID '${orgId}' not found` });
+
+    if (allowCrossProjectSecretSharing !== undefined) {
+      const projectIds = await projectDAL.findOrgProjectIds(orgId);
+      await Promise.all(projectIds.map((id) => secretV2BridgeDAL.invalidateSecretCacheByProjectId(id)));
+    }
+
     return org;
   };
   /*
@@ -650,21 +716,43 @@ export const orgServiceFactory = ({
   const createOrganization = async (
     {
       userId,
-      userEmail,
-      orgName
+      orgName,
+      blockIfUserHasCreatedOrg
     }: {
       userId?: string;
       orgName: string;
-      userEmail?: string | null;
+      // Set by the user-facing create-org endpoint, and only on cloud.
+      blockIfUserHasCreatedOrg?: boolean;
     },
     trx?: Knex
   ) => {
-    const customerId = await licenseService.generateOrgCustomerId(orgName, userEmail);
-
     const createOrg = async (tx: Knex) => {
+      // Serializes concurrent creates so two requests cannot both read a count of zero. Tried rather
+      // than waited on, so the loser answers immediately instead of holding one of the ten pool
+      // connections until the winner commits.
+      if (blockIfUserHasCreatedOrg && userId) {
+        const lock = await tx.raw<{ rows: { lock_acquired: boolean }[] }>(
+          "SELECT pg_try_advisory_xact_lock(?) as lock_acquired",
+          [PgSqlLock.CreateOrganization(userId)]
+        );
+        if (!lock?.rows[0]?.lock_acquired) {
+          throw new ConflictError({
+            message: "Another organization is already being created for your account. Try again in a moment."
+          });
+        }
+
+        const createdOrgs = await orgDAL.countJoinedRootOrgsCreatedByUserId(userId, tx);
+        if (createdOrgs > 0) {
+          throw new ConflictError({
+            message:
+              "You have already created an organization. Ask an administrator of an existing organization to invite you."
+          });
+        }
+      }
+
       // akhilmhdh: for now this is auto created. in future we can input from user and for previous users just modifiy
       const org = await orgDAL.create(
-        { name: orgName, customerId, slug: slugify(`${orgName}-${alphaNumericNanoId(4)}`) },
+        { name: orgName, slug: slugify(`${orgName}-${alphaNumericNanoId(4)}`), createdByUserId: userId },
         tx
       );
       if (userId) {
@@ -696,12 +784,46 @@ export const orgServiceFactory = ({
         tx
       );
 
+      await bootstrapPamProject(
+        {
+          orgId: org.id,
+          adminUserIds: userId ? [userId] : []
+        },
+        { projectDAL, membershipDAL, membershipRoleDAL },
+        tx
+      );
+
+      await bootstrapAgentVaultProject(
+        {
+          orgId: org.id,
+          adminUserIds: userId ? [userId] : []
+        },
+        { projectDAL, membershipDAL, membershipRoleDAL },
+        tx
+      );
+
+      // Orgs created from the admin console have no creator; their admins are invited afterwards, so the
+      // project is left to the lazy resolver, which makes every org admin a project admin.
+      if (userId) {
+        await bootstrapSecretScanningProject(
+          {
+            orgId: org.id,
+            adminUserIds: [userId]
+          },
+          { projectDAL, membershipDAL, membershipRoleDAL },
+          tx
+        );
+      }
+
       return org;
     };
 
     const organization = await (trx ? createOrg(trx) : orgDAL.transaction(createOrg));
 
     await licenseService.updateSubscriptionOrgMemberCount(organization.id, trx);
+
+    usageMeteringService.emit(organization.id, PamIdentities.key);
+    usageMeteringService.emit(organization.id, AgentVaultIdentities.key);
 
     return organization;
   };
@@ -755,24 +877,27 @@ export const orgServiceFactory = ({
     const decodedToken = crypto.jwt().verify(authToken, cfg.AUTH_SECRET) as AuthModeJwtTokenPayload;
     if (!decodedToken.authMethod) throw new UnauthorizedError({ name: "Auth method not found on existing token" });
 
+    const org = await requestMemoize(requestMemoKeys.orgFindById(orgId), () => orgDAL.findById(orgId));
+    if (!org) throw new NotFoundError({ message: `Organization with ID '${orgId}' not found` });
+    // if root org null = this is a root org then cancel the subscription.
+    if (!org.rootOrgId) {
+      await licenseService.cancelOrgSubscription(orgId);
+    }
+
+    // Outside the transaction: the cleanup runs its own queries per project, and inside it each
+    // concurrent delete would hold one pooled connection while waiting on a second.
+    const projects = await projectDAL.find({ orgId });
+    for await (const project of projects) {
+      await fnDeleteProjectSecretReminders(project.id, {
+        secretDAL,
+        reminderService,
+        projectBotService,
+        folderDAL
+      });
+    }
+
     const response = await orgDAL.transaction(async (tx) => {
-      const projects = await projectDAL.find({ orgId }, { tx });
-
-      for await (const project of projects) {
-        await fnDeleteProjectSecretReminders(project.id, {
-          secretDAL,
-          secretV2BridgeDAL,
-          reminderService,
-          projectBotService,
-          folderDAL
-        });
-      }
-
       const deletedOrg = await orgDAL.deleteById(orgId, tx);
-
-      if (deletedOrg.customerId) {
-        await licenseService.removeOrgCustomer(deletedOrg.customerId);
-      }
 
       // Generate new tokens without the organization ID present
       const user = await userDAL.findById(userId, tx);
@@ -807,33 +932,68 @@ export const orgServiceFactory = ({
     role,
     isActive,
     orgId,
-    userId,
+    actor,
+    actorId,
     membershipId,
     actorAuthMethod,
     actorOrgId,
     metadata
   }: TUpdateOrgMembershipDTO) => {
     const { permission } = await permissionService.getOrgPermission({
-      actor: ActorType.USER,
-      actorId: userId,
+      actor,
+      actorId,
       orgId,
       actorAuthMethod,
       actorOrgId,
       scope: OrganizationActionScope.Any
     });
-    ForbiddenError.from(permission).throwUnlessCan(OrgPermissionActions.Edit, OrgPermissionSubjects.Member);
+    ForbiddenError.from(permission).throwUnlessCan(OrgPermissionMemberActions.Edit, OrgPermissionSubjects.Member);
 
     const foundMembership = await membershipUserDAL.findOne({
       id: membershipId,
       scope: AccessScope.Organization,
       scopeOrgId: actorOrgId
     });
-    if (!foundMembership)
-      throw new NotFoundError({ message: `Organization membership with ID ${membershipId} not found` });
+    if (!foundMembership?.actorUserId)
+      throw new NotFoundError({ message: `Organization membership with ID '${membershipId}' not found` });
     if (foundMembership.scopeOrgId !== orgId)
       throw new UnauthorizedError({ message: "Updated org member doesn't belong to the organization" });
-    if (foundMembership.actorUserId === userId)
+    if (actor === ActorType.USER && foundMembership.actorUserId === actorId)
       throw new UnauthorizedError({ message: "Cannot update own organization membership" });
+
+    const { shouldUseNewPrivilegeSystem } = await requestMemoize(requestMemoKeys.orgFindById(orgId), () =>
+      orgDAL.findById(orgId)
+    );
+
+    const targetOps: { opAction: OrgPermissionMemberActions; baseMessage: string }[] = [];
+    if (role !== undefined || metadata !== undefined)
+      targetOps.push({
+        opAction: OrgPermissionMemberActions.GrantPrivileges,
+        baseMessage: "Failed to change the roles or attributes of this org member"
+      });
+    if (isActive !== undefined)
+      targetOps.push({
+        opAction: OrgPermissionMemberActions.Edit,
+        baseMessage: "Failed to change the activation status of this org member"
+      });
+
+    if (targetOps.length) {
+      const targetRoles = resolveMembershipRoleSlugs(await membershipRoleDAL.findRolesByMembershipIds([membershipId]));
+      const targetPermissions = await permissionService.getOrgPermissionByRoles(targetRoles, orgId, {
+        ignoreUnresolvedRoles: true
+      });
+
+      for (const { opAction, baseMessage } of targetOps) {
+        assertRoleSetBoundary({
+          shouldUseNewPrivilegeSystem,
+          opActions: opAction,
+          opSubject: OrgPermissionSubjects.Member,
+          actorPermission: permission,
+          targetPermissions,
+          baseMessage
+        });
+      }
+    }
 
     const isCustomRole = !Object.values(OrgMembershipRole).includes(role as OrgMembershipRole);
     let userRole = role;
@@ -852,17 +1012,22 @@ export const orgServiceFactory = ({
       userRoleId = customRole.id;
     }
 
-    if (role) {
-      const [permissionRole] = await permissionService.getOrgPermissionByRoles([role], orgId);
-      assertPermissionBoundary(
-        permission,
-        permissionRole.permission,
-        "Cannot assign a role exceeding your own privileges to an org member"
-      );
+    if (role && roleNeedsPrivilegeBoundary(role)) {
+      const permissionRoles = await permissionService.getOrgPermissionByRoles([role], orgId);
+      assertRoleSetBoundary({
+        shouldUseNewPrivilegeSystem,
+        opActions: OrgPermissionMemberActions.GrantPrivileges,
+        opSubject: OrgPermissionSubjects.Member,
+        actorPermission: permission,
+        targetPermissions: permissionRoles,
+        baseMessage: "Failed to assign the requested role to an org member"
+      });
     }
 
     const updatesToActiveAdmin = role === OrgMembershipRole.Admin && isActive !== false;
     const noRoleOrActivationChange = role === undefined && (isActive === undefined || isActive === true);
+
+    let sendPamCancellations = () => {};
 
     const membership = await orgDAL.transaction(async (tx) => {
       if (!updatesToActiveAdmin && !noRoleOrActivationChange) {
@@ -909,8 +1074,23 @@ export const orgServiceFactory = ({
           );
         }
       }
+
+      if (isActive === false && updatedOrgMembership.actorUserId) {
+        const childOrgs = await orgDAL.find({ rootOrgId: orgId }, { tx });
+        sendPamCancellations = await terminatePamSessionsForUsers({
+          orgIds: [orgId, ...childOrgs.map((el) => el.id)],
+          userIds: [updatedOrgMembership.actorUserId],
+          pamSessionDAL,
+          gatewayV2Service,
+          tx
+        });
+      }
+
       return updatedOrgMembership;
     });
+
+    sendPamCancellations();
+
     return membership;
   };
 
@@ -951,7 +1131,7 @@ export const orgServiceFactory = ({
       scope: OrganizationActionScope.ParentOrganization
     });
 
-    ForbiddenError.from(permission).throwUnlessCan(OrgPermissionActions.Create, OrgPermissionSubjects.Member);
+    ForbiddenError.from(permission).throwUnlessCan(OrgPermissionMemberActions.Create, OrgPermissionSubjects.Member);
 
     const invitingUser = await userDAL.findOne({ id: actorId });
 
@@ -1073,14 +1253,14 @@ export const orgServiceFactory = ({
       });
     }
 
-    const organization = await requestMemoize(requestMemoKeys.orgFindById(orgId), () => orgDAL.findById(orgId));
-
     await tokenService.validateTokenForUser({
       type: TokenType.TOKEN_EMAIL_ORG_INVITATION,
       userId: user.id,
       orgId: orgMembership.scopeOrgId,
       code
     });
+
+    const organization = await requestMemoize(requestMemoKeys.orgFindById(orgId), () => orgDAL.findById(orgId));
 
     await userDAL.updateById(user.id, {
       isEmailVerified: true
@@ -1089,7 +1269,7 @@ export const orgServiceFactory = ({
     // If user already completed signup, they'll be promoted to Accepted
     // when they authenticate via selectOrganization or processProviderCallback
     if (user.isAccepted) {
-      return { user };
+      return { user, organizationName: organization.name };
     }
 
     const membershipRole = await membershipRoleDAL.findOne({ membershipId: orgMembership.id });
@@ -1097,14 +1277,17 @@ export const orgServiceFactory = ({
       organization.authEnforced &&
       !(organization.bypassOrgAuthEnabled && membershipRole.role === OrgMembershipRole.Admin)
     ) {
-      return { user };
+      return { user, organizationName: organization.name };
     }
 
     const appCfg = getConfig();
     const token = crypto.jwt().sign(
       {
         authTokenType: AuthTokenType.SIGNUP_TOKEN,
-        userId: user.id
+        userId: user.id,
+        // the invite this signup was started from, so completing the account can attribute it to
+        // this org rather than guess among every org that invited the user
+        organizationId: orgMembership.scopeOrgId
       },
       appCfg.AUTH_SECRET,
       {
@@ -1112,7 +1295,7 @@ export const orgServiceFactory = ({
       }
     );
 
-    return { token, user };
+    return { token, user, organizationName: organization.name };
   };
 
   const getOrgMembership = async ({
@@ -1131,7 +1314,7 @@ export const orgServiceFactory = ({
       actorAuthMethod,
       actorOrgId
     });
-    ForbiddenError.from(permission).throwUnlessCan(OrgPermissionActions.Read, OrgPermissionSubjects.Member);
+    ForbiddenError.from(permission).throwUnlessCan(OrgPermissionMemberActions.Read, OrgPermissionSubjects.Member);
 
     const membership = await orgMembershipDAL.findOrgMembershipById(membershipId);
     if (!membership) {
@@ -1144,22 +1327,60 @@ export const orgServiceFactory = ({
     return membership;
   };
 
+  const $assertMembershipRemovalBoundary = async ({
+    membershipIds,
+    orgId,
+    permission
+  }: {
+    membershipIds: string[];
+    orgId: string;
+    permission: MongoAbility;
+  }) => {
+    const targetRoles = resolveMembershipRoleSlugs(await membershipRoleDAL.findRolesByMembershipIds(membershipIds));
+    const targetPermissions = await permissionService.getOrgPermissionByRoles(targetRoles, orgId, {
+      ignoreUnresolvedRoles: true
+    });
+    const { shouldUseNewPrivilegeSystem } = await requestMemoize(requestMemoKeys.orgFindById(orgId), () =>
+      orgDAL.findById(orgId)
+    );
+
+    assertRoleSetBoundary({
+      shouldUseNewPrivilegeSystem,
+      opActions: OrgPermissionMemberActions.Delete,
+      opSubject: OrgPermissionSubjects.Member,
+      actorPermission: permission,
+      targetPermissions,
+      baseMessage: "Failed to remove this member from the organization"
+    });
+  };
+
   const deleteOrgMembership = async ({
     orgId,
-    userId,
+    actor,
+    actorId,
     membershipId,
     actorAuthMethod,
     actorOrgId
   }: TDeleteOrgMembershipDTO) => {
     const { permission } = await permissionService.getOrgPermission({
-      actor: ActorType.USER,
-      actorId: userId,
+      actor,
+      actorId,
       orgId,
       actorAuthMethod,
       actorOrgId,
       scope: OrganizationActionScope.Any
     });
-    ForbiddenError.from(permission).throwUnlessCan(OrgPermissionActions.Delete, OrgPermissionSubjects.Member);
+    ForbiddenError.from(permission).throwUnlessCan(OrgPermissionMemberActions.Delete, OrgPermissionSubjects.Member);
+
+    const membershipToDelete = await membershipUserDAL.findOne({
+      id: membershipId,
+      scope: AccessScope.Organization,
+      scopeOrgId: orgId
+    });
+    if (!membershipToDelete?.actorUserId)
+      throw new NotFoundError({ message: `Organization membership with ID '${membershipId}' not found` });
+
+    await $assertMembershipRemovalBoundary({ membershipIds: [membershipId], orgId, permission });
 
     const [deletedMembership] = await deleteOrgMembershipsFn({
       orgMembershipIds: [membershipId],
@@ -1168,37 +1389,56 @@ export const orgServiceFactory = ({
       projectKeyDAL,
       userAliasDAL,
       licenseService,
-      userId,
+      userId: actor === ActorType.USER ? actorId : undefined,
       membershipUserDAL,
       membershipRoleDAL,
       userGroupMembershipDAL,
       additionalPrivilegeDAL,
-      approvalPolicyDAL
+      approvalPolicyDAL,
+      alertChannelRecipientDAL,
+      pamSessionDAL,
+      gatewayV2Service
     });
 
+    // Removing an org member cascades their project + group memberships, changing the identity meters.
+    usageMeteringService.emit(orgId, SecretIdentities.key);
+    usageMeteringService.emit(orgId, PamIdentities.key);
+    usageMeteringService.emit(orgId, AgentVaultIdentities.key);
     return deletedMembership;
   };
 
   const bulkDeleteOrgMemberships = async ({
     orgId,
-    userId,
+    actor,
+    actorId,
     membershipIds,
     actorAuthMethod,
     actorOrgId
   }: TDeleteOrgMembershipsDTO) => {
     const { permission } = await permissionService.getOrgPermission({
-      actor: ActorType.USER,
-      actorId: userId,
+      actor,
+      actorId,
       orgId,
       actorAuthMethod,
       actorOrgId,
       scope: OrganizationActionScope.Any
     });
-    ForbiddenError.from(permission).throwUnlessCan(OrgPermissionActions.Delete, OrgPermissionSubjects.Member);
+    ForbiddenError.from(permission).throwUnlessCan(OrgPermissionMemberActions.Delete, OrgPermissionSubjects.Member);
 
-    if (membershipIds.includes(userId)) {
-      throw new BadRequestError({ message: "You cannot delete your own organization membership" });
-    }
+    const membershipsToDelete = await membershipUserDAL.find({
+      scope: AccessScope.Organization,
+      scopeOrgId: orgId,
+      $in: { id: membershipIds },
+      $notNull: ["actorUserId"]
+    });
+    const foundMembershipIds = new Set(membershipsToDelete.map((el) => el.id));
+    const missingMembershipIds = membershipIds.filter((id) => !foundMembershipIds.has(id));
+    if (missingMembershipIds.length)
+      throw new NotFoundError({
+        message: `Organization membership with ID '${missingMembershipIds.join("', '")}' not found`
+      });
+
+    await $assertMembershipRemovalBoundary({ membershipIds, orgId, permission });
 
     const deletedMemberships = await deleteOrgMembershipsFn({
       orgMembershipIds: membershipIds,
@@ -1207,14 +1447,21 @@ export const orgServiceFactory = ({
       projectKeyDAL,
       userAliasDAL,
       licenseService,
-      userId,
+      userId: actor === ActorType.USER ? actorId : undefined,
       membershipUserDAL,
       membershipRoleDAL,
       userGroupMembershipDAL,
       additionalPrivilegeDAL,
-      approvalPolicyDAL
+      approvalPolicyDAL,
+      alertChannelRecipientDAL,
+      pamSessionDAL,
+      gatewayV2Service
     });
 
+    // Removing org members cascades their project + group memberships, changing the identity meters.
+    usageMeteringService.emit(orgId, SecretIdentities.key);
+    usageMeteringService.emit(orgId, PamIdentities.key);
+    usageMeteringService.emit(orgId, AgentVaultIdentities.key);
     return deletedMemberships;
   };
 
@@ -1234,7 +1481,7 @@ export const orgServiceFactory = ({
       actorAuthMethod,
       actorOrgId
     });
-    ForbiddenError.from(permission).throwUnlessCan(OrgPermissionActions.Read, OrgPermissionSubjects.Member);
+    ForbiddenError.from(permission).throwUnlessCan(OrgPermissionMemberActions.Read, OrgPermissionSubjects.Member);
 
     const membership = await orgMembershipDAL.findOrgMembershipById(orgMembershipId);
     if (!membership) {

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Controller, useFieldArray, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useParams } from "@tanstack/react-router";
 import {
   HelpCircleIcon,
   InfoIcon,
@@ -20,6 +19,7 @@ import {
   AlertDescription,
   AlertTitle,
   Button,
+  Combobox,
   Field,
   FieldContent,
   FieldDescription,
@@ -31,11 +31,6 @@ import {
   Input,
   RadioGroup,
   RadioGroupItem,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
   Tabs,
   TabsContent,
   TabsList,
@@ -58,7 +53,7 @@ import {
   superRefineAccessTokenTtl,
   trustedIpsSchema
 } from "@app/helpers/identityAuthSchemas";
-import { useScopeVariant } from "@app/hooks";
+import { useRouteProjectId, useScopeVariant } from "@app/hooks";
 import {
   MachineIdentityAuthMethod,
   useAddIdentityLdapAuth,
@@ -76,7 +71,9 @@ import { AccessTokenTtlFields } from "./shared/AccessTokenTtlFields";
 import { TrustedIpsField } from "./shared/TrustedIpsField";
 import { IDENTITY_AUTH_FORM_ID, IdentityFormTab } from "./types";
 
-const buildSchema = (maxAccessTokenTTL: number) =>
+const normalizeUrl = (value?: string) => value?.trim() ?? "";
+
+const buildSchema = (maxAccessTokenTTL: number, isUpdate: boolean, currentUrl?: string) =>
   z
     .object({
       scope: z.enum(["template", "custom"]),
@@ -181,10 +178,12 @@ const buildSchema = (maxAccessTokenTTL: number) =>
             path: ["bindDN"]
           });
         }
-        if (!data.bindPass) {
+        if (!data.bindPass && (!isUpdate || normalizeUrl(data.url) !== normalizeUrl(currentUrl))) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
-            message: "Bind Pass is required when using custom scope",
+            message: isUpdate
+              ? "Bind Pass is required when the LDAP URL changes"
+              : "Bind Pass is required when using custom scope",
             path: ["bindPass"]
           });
         }
@@ -200,6 +199,12 @@ const buildSchema = (maxAccessTokenTTL: number) =>
     .superRefine(superRefineAccessTokenTtl);
 
 export type FormData = z.infer<ReturnType<typeof buildSchema>>;
+
+type ConfigurationOption = {
+  group: "Configuration" | "Templates";
+  label: string;
+  value: string;
+};
 
 type Props = {
   handlePopUpOpen: (
@@ -227,14 +232,11 @@ export const IdentityLdapAuthForm = ({
   const { currentOrg } = useOrganization();
   const orgId = currentOrg?.id || "";
   const { subscription } = useSubscription();
-  const { projectId } = useParams({
-    strict: false
-  });
+  const projectId = useRouteProjectId();
   const scopeVariant = useScopeVariant();
   const { mutateAsync: addMutateAsync } = useAddIdentityLdapAuth();
   const { mutateAsync: updateMutateAsync } = useUpdateIdentityLdapAuth();
   const [tabValue, setTabValue] = useState<IdentityFormTab>(IdentityFormTab.Configuration);
-  const { data: templates } = useGetAvailableTemplates(MachineIdentityAuthMethod.LDAP);
   const { permission } = useOrgPermission();
 
   const canAttachTemplates = permission.can(
@@ -242,11 +244,19 @@ export const IdentityLdapAuthForm = ({
     OrgPermissionSubjects.MachineIdentityAuthTemplate
   );
 
+  const { data: templates, isLoading: isTemplatesLoading } = useGetAvailableTemplates(
+    MachineIdentityAuthMethod.LDAP,
+    { enabled: canAttachTemplates && Boolean(subscription?.machineIdentityAuthTemplates) }
+  );
+
   const { data } = useGetIdentityLdapAuth(identityId ?? "", {
     enabled: isUpdate
   });
 
-  const resolver = useMemo(() => zodResolver(buildSchema(maxAccessTokenTTL)), [maxAccessTokenTTL]);
+  const resolver = useMemo(
+    () => zodResolver(buildSchema(maxAccessTokenTTL, Boolean(isUpdate), data?.url)),
+    [maxAccessTokenTTL, isUpdate, data?.url]
+  );
 
   const {
     control,
@@ -254,8 +264,9 @@ export const IdentityLdapAuthForm = ({
     reset,
     watch,
     setValue,
+    clearErrors,
     trigger,
-    formState: { isSubmitting }
+    formState: { errors, isSubmitting }
   } = useForm<FormData>({
     resolver,
     defaultValues: {
@@ -277,6 +288,34 @@ export const IdentityLdapAuthForm = ({
   });
 
   const scope = watch("scope");
+  const templateId = watch("templateId");
+  const urlValue = watch("url");
+  const hasUrlChanged = Boolean(
+    isUpdate &&
+      scope !== "template" &&
+      data?.url &&
+      normalizeUrl(urlValue) !== normalizeUrl(data.url)
+  );
+
+  const configurationOptions = useMemo<ConfigurationOption[]>(
+    () => [
+      {
+        group: "Configuration",
+        label: "Custom Configuration",
+        value: "custom"
+      },
+      ...(templates ?? []).map((template) => ({
+        group: "Templates" as const,
+        label: template.name,
+        value: template.id
+      }))
+    ],
+    [templates]
+  );
+
+  const selectedConfiguration = configurationOptions.find(
+    ({ value }) => value === (scope === "template" ? templateId : "custom")
+  );
 
   const lockoutEnabledWatch = watch("lockoutEnabled");
   const lockoutThresholdWatch = watch("lockoutThreshold");
@@ -316,7 +355,7 @@ export const IdentityLdapAuthForm = ({
         templateId: data.templateId || "",
         url: data.url || "",
         bindDN: data.bindDN || "",
-        bindPass: data.bindPass || "",
+        bindPass: "",
         searchBase: data.searchBase || "",
         searchFilter: data.searchFilter,
         ldapCaCertificate: data.ldapCaCertificate || undefined,
@@ -428,7 +467,7 @@ export const IdentityLdapAuthForm = ({
             ...basePayload,
             url: submissionUrl,
             bindDN: submissionBindDN,
-            bindPass: submissionBindPass,
+            ...(submissionBindPass ? { bindPass: submissionBindPass } : {}),
             searchBase: submissionSearchBase
           };
 
@@ -503,69 +542,53 @@ export const IdentityLdapAuthForm = ({
               <Controller
                 control={control}
                 name="scope"
-                render={({ field: { value, onChange }, fieldState: { error } }) => (
+                render={({ field: { onChange }, fieldState: { error } }) => (
                   <Field>
-                    <FieldLabel htmlFor="ldap-scope">Configuration Type</FieldLabel>
-                    <Select
-                      value={value}
-                      onValueChange={(val) => {
-                        onChange(val);
-                        setValue("templateId", data?.templateId || "");
-                        setValue("url", data?.url || "");
-                        setValue("bindDN", data?.bindDN || "");
-                        setValue("bindPass", data?.bindPass || "");
-                        setValue("searchBase", data?.searchBase || "");
-                        setValue("ldapCaCertificate", data?.ldapCaCertificate || "");
-                      }}
-                    >
-                      <SelectTrigger id="ldap-scope" className="w-full" isError={Boolean(error)}>
-                        <SelectValue placeholder="Select configuration type" />
-                      </SelectTrigger>
-                      <SelectContent position="popper">
-                        <SelectItem value="template">Use Template</SelectItem>
-                        <SelectItem value="custom">Custom Configuration</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <FieldError>{error?.message}</FieldError>
-                  </Field>
-                )}
-              />
-            )}
+                    <FieldLabel htmlFor="ldap-configuration">Configuration</FieldLabel>
+                    <Combobox<ConfigurationOption>
+                      id="ldap-configuration"
+                      value={selectedConfiguration}
+                      options={configurationOptions}
+                      getOptionGroup={(option) => option.group}
+                      getOptionLabel={(option) => option.label}
+                      getOptionValue={(option) => option.value}
+                      placeholder="Select or search configurations..."
+                      searchAriaLabel="Search configurations"
+                      isLoading={isTemplatesLoading}
+                      isError={Boolean(error || errors.templateId)}
+                      isClearable={false}
+                      onValueChange={(selectedOption) => {
+                        if (selectedOption.value === "custom") {
+                          onChange("custom");
+                          setValue("templateId", "");
+                          clearErrors("templateId");
+                          setValue("url", data?.url || "");
+                          setValue("bindDN", data?.bindDN || "");
+                          setValue("bindPass", "");
+                          setValue("searchBase", data?.searchBase || "");
+                          setValue("ldapCaCertificate", data?.ldapCaCertificate || "");
+                          return;
+                        }
 
-            {scope === "template" && (
-              <Controller
-                control={control}
-                name="templateId"
-                render={({ field: { value, onChange }, fieldState: { error } }) => (
-                  <Field>
-                    <FieldLabel htmlFor="ldap-template">Template</FieldLabel>
-                    <Select
-                      value={value}
-                      onValueChange={(val) => {
-                        onChange(val);
-                        const tmp = templates?.find((t) => t.id === val);
-                        if (!tmp) return;
-                        setValue("url", tmp.templateFields.url);
-                        setValue("bindDN", tmp.templateFields.bindDN);
-                        setValue("bindPass", tmp.templateFields.bindPass);
-                        setValue("searchBase", tmp.templateFields.searchBase);
-                        setValue("ldapCaCertificate", tmp.templateFields.ldapCaCertificate);
+                        const template = templates?.find(({ id }) => id === selectedOption.value);
+                        if (!template) return;
+
+                        onChange("template");
+                        setValue("templateId", template.id);
+                        clearErrors("templateId");
+                        setValue("url", template.templateFields.url ?? "");
+                        setValue("bindDN", template.templateFields.bindDN ?? "");
+                        // bindPass is write-only: the picker feed never returns it, and the
+                        // attach flow resolves it server-side from the template
+                        setValue("bindPass", template.templateFields.bindPass ?? "");
+                        setValue("searchBase", template.templateFields.searchBase ?? "");
+                        setValue(
+                          "ldapCaCertificate",
+                          template.templateFields.ldapCaCertificate ?? ""
+                        );
                       }}
-                    >
-                      <SelectTrigger id="ldap-template" className="w-full" isError={Boolean(error)}>
-                        <SelectValue placeholder="Select a template" />
-                      </SelectTrigger>
-                      <SelectContent position="popper">
-                        {templates?.map((template) => {
-                          return (
-                            <SelectItem value={template.id} key={template.id}>
-                              {template.name}
-                            </SelectItem>
-                          );
-                        })}
-                      </SelectContent>
-                    </Select>
-                    <FieldError>{error?.message}</FieldError>
+                    />
+                    <FieldError>{error?.message || errors.templateId?.message}</FieldError>
                   </Field>
                 )}
               />
@@ -650,6 +673,13 @@ export const IdentityLdapAuthForm = ({
                     disabled={scope === "template"}
                     isError={Boolean(error)}
                   />
+                  {isUpdate && scope !== "template" && (
+                    <FieldDescription>
+                      {hasUrlChanged
+                        ? "The LDAP URL changed, so the bind password must be re-entered."
+                        : "Leave blank to keep the current password. Type a new value to rotate it."}
+                    </FieldDescription>
+                  )}
                   <FieldError>{error?.message}</FieldError>
                 </Field>
               )}

@@ -1,7 +1,102 @@
 import RE2 from "re2";
 import { z } from "zod";
 
-import { PkiSync } from "./pki-sync-enums";
+import { PKI_SYNC_FILTERS } from "@app/lib/api-docs/constants";
+import { HOSTNAME_MAX_LENGTH, isValidHostname } from "@app/lib/validator/validate-hostname";
+
+import { buildCertificateNameSchemaTestName } from "./pki-sync-certificate-name-fns";
+import { PkiSync, PkiSyncStatus } from "./pki-sync-enums";
+import { EXPORT_PASSWORD_BLANK_MESSAGE } from "./pki-sync-export-fns";
+import { PKI_SYNC_MAX_FILTER_ORDERS } from "./pki-sync-filter-fns";
+import { HOST_COMMAND_MAX_LENGTH } from "./pki-sync-host-command-fns";
+
+export const HostCommandSchema = z
+  .string()
+  .trim()
+  .max(HOST_COMMAND_MAX_LENGTH, `Command must be at most ${HOST_COMMAND_MAX_LENGTH} characters`)
+  .nullable()
+  .optional();
+
+const KEYSTORE_ALIAS = new RE2("^[a-zA-Z0-9._-]+$");
+
+export const KeystoreAliasSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(128)
+  .refine((v) => KEYSTORE_ALIAS.test(v), {
+    message: "Keystore alias may only contain letters, digits, dots (.), dashes (-), and underscores (_)"
+  })
+  .optional()
+  .describe(
+    "Alias of the private key entry in a PKCS#12 or JKS keystore. Defaults to the certificate's file base name. JKS stores aliases in lowercase."
+  );
+
+export const ExportPasswordSchema = z
+  .string()
+  .min(1)
+  .max(1024)
+  .refine((password) => password.trim().length > 0, { message: EXPORT_PASSWORD_BLANK_MESSAGE });
+
+export const IncludeTruststoreSchema = z
+  .boolean()
+  .optional()
+  .describe(
+    "Java KeyStore only: also deliver '<name>.truststore.jks' holding the chain and root CA as trusted certificates."
+  );
+
+export const PkiSyncTargetPortSchema = z.coerce
+  .number()
+  .int()
+  .min(1)
+  .max(65535)
+  .optional()
+  .describe("The port to reach the target host on. Defaults to the protocol's standard port.");
+
+export const PkiSyncTargetHostSchema = z
+  .string()
+  .trim()
+  .min(1, "Target host is required")
+  .max(HOSTNAME_MAX_LENGTH, "Target host is too long")
+  .refine(isValidHostname, {
+    message: "Target host must be a hostname or IP address (for example server01.corp.example.com or 10.0.0.5)"
+  })
+  .optional();
+
+// Sync options shared by every destination. Destinations extend this with their own
+// certificateNameSchema and any extra options.
+export const BasePkiSyncOptionsSchema = z.object({
+  canRemoveCertificates: z.boolean().default(true),
+  includeRootCa: z.boolean().default(false),
+  preserveItemOnRenewal: z.boolean().default(true),
+  healthCheckCommand: HostCommandSchema,
+  postSyncCommand: HostCommandSchema
+});
+
+// Builds a destination's certificateNameSchema validator. The compiled name must match the
+// destination's character rules; pass requireCertificateIdentifier when every certificate must
+// resolve to a unique name (so a static schema cannot collide/overwrite across certificates).
+export const buildDestinationCertificateNameSchema = (options: {
+  naming: { NAME_PATTERN: RE2; FORBIDDEN_CHARACTERS: string };
+  message: string;
+  requireCertificateIdentifier?: boolean;
+}) =>
+  z
+    .string()
+    .trim()
+    .min(1, "Certificate name schema is required")
+    .refine(
+      (schema) => {
+        const testName = buildCertificateNameSchemaTestName(schema);
+        const hasForbiddenChars = options.naming.FORBIDDEN_CHARACTERS.split("").some((char) => testName.includes(char));
+        const hasCertificateIdentifier =
+          !options.requireCertificateIdentifier ||
+          schema.includes("{{certificateId}}") ||
+          schema.includes("{{shortCertificateId}}");
+        return hasCertificateIdentifier && options.naming.NAME_PATTERN.test(testName) && !hasForbiddenChars;
+      },
+      { message: options.message }
+    );
 
 // Schema for PKI sync options configuration
 export const PkiSyncOptionsSchema = z.object({
@@ -26,18 +121,11 @@ export const PkiSyncOptionsSchema = z.object({
           .join("|");
 
         const allowedContentRegex = new RE2(`^([a-zA-Z0-9_\\-/]|${allowedPlaceholdersRegexPart})*$`);
-        const contentIsValid = allowedContentRegex.test(val);
-
-        if (val.trim()) {
-          const certificateIdIsPresent = val.includes("{{certificateId}}") || val.includes("{{shortCertificateId}}");
-          return contentIsValid && certificateIdIsPresent;
-        }
-
-        return contentIsValid;
+        return allowedContentRegex.test(val);
       },
       {
         message:
-          "Certificate name schema must include the {{certificateId}} or {{shortCertificateId}} placeholder. It can also include {{profileId}}, {{applicationId}}, {{applicationName}}, and {{commonName}} placeholders. Only alphanumeric characters (a-z, A-Z, 0-9), dashes (-), underscores (_), and slashes (/) are allowed besides the placeholders."
+          "Certificate name schema may include the {{certificateId}}, {{shortCertificateId}}, {{profileId}}, {{applicationId}}, {{applicationName}}, and {{commonName}} placeholders. Only alphanumeric characters (a-z, A-Z, 0-9), dashes (-), underscores (_), and slashes (/) are allowed besides the placeholders. A schema with no placeholder can be linked to only one certificate."
       }
     )
 });
@@ -47,6 +135,45 @@ export const PkiSyncDestinationConfigSchema = z.object({
   destination: z.nativeEnum(PkiSync),
   config: z.record(z.unknown())
 });
+
+const PkiSyncFiltersSchema = z
+  .object({
+    profileIds: z.string().uuid().array().max(20).optional().describe(PKI_SYNC_FILTERS.profileIds),
+    certificateOrderIds: z
+      .string()
+      .uuid()
+      .array()
+      .max(PKI_SYNC_MAX_FILTER_ORDERS)
+      .optional()
+      .describe(PKI_SYNC_FILTERS.certificateOrderIds),
+    metadata: z
+      .object({
+        key: z
+          .string()
+          .trim()
+          .min(1, "Metadata filter key cannot be empty")
+          .max(255)
+          .describe(PKI_SYNC_FILTERS.metadataKey),
+        value: z.string().trim().max(1020).optional().describe(PKI_SYNC_FILTERS.metadataValue)
+      })
+      .array()
+      .max(20)
+      .optional()
+      .describe(PKI_SYNC_FILTERS.metadata)
+  })
+  .strict();
+
+export const PkiSyncFiltersField = PkiSyncFiltersSchema.nullish().describe(PKI_SYNC_FILTERS.filters);
+
+export const UpdatePkiSyncFiltersField = PkiSyncFiltersSchema.nullish().describe(PKI_SYNC_FILTERS.updateFilters);
+
+const StoredPkiSyncFiltersSchema = z.object({
+  profileIds: z.string().uuid().array().optional(),
+  certificateOrderIds: z.string().uuid().array().optional(),
+  metadata: z.object({ key: z.string(), value: z.string().optional() }).array().optional()
+});
+
+export const PkiSyncStoredFiltersField = StoredPkiSyncFiltersSchema.nullish().describe(PKI_SYNC_FILTERS.filters);
 
 // Base PKI sync schema for API responses
 export const PkiSyncSchema = z.object({
@@ -63,5 +190,17 @@ export const PkiSyncSchema = z.object({
   createdAt: z.date(),
   updatedAt: z.date(),
   syncStatus: z.string().nullable().optional(),
-  lastSyncedAt: z.date().nullable().optional()
+  lastSyncedAt: z.date().nullable().optional(),
+  lastHealthCheckRanAt: z.date().nullable().optional(),
+  lastHealthCheckStatus: z.nativeEnum(PkiSyncStatus).nullable().optional(),
+  lastHealthCheckMessage: z.string().nullable().optional(),
+  filters: PkiSyncStoredFiltersField
+});
+
+export const BaseHealthCheckTestSchema = z.object({
+  connectionId: z.string().uuid(),
+  applicationId: z.string().uuid().optional(),
+  syncId: z.string().uuid().optional(),
+  certificateIds: z.array(z.string().uuid()).max(100).optional(),
+  filters: PkiSyncFiltersField
 });

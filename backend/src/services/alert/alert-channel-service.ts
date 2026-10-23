@@ -1,0 +1,378 @@
+import { Knex } from "knex";
+import { z } from "zod";
+
+import { TAlertChannels } from "@app/db/schemas";
+import { TEmailDomainDALFactory } from "@app/ee/services/email-domain/email-domain-dal";
+import { TGroupDALFactory } from "@app/ee/services/group/group-dal";
+import { BadRequestError } from "@app/lib/errors";
+import { TOrgDALFactory } from "@app/services/org/org-dal";
+import { TProjectDALFactory } from "@app/services/project/project-dal";
+
+import { getChannelDefinition, mergeChannelConfigWithStored, parseChannelConfig } from "./alert-channel-config-fns";
+import {
+  decryptChannelConfig,
+  encryptChannelConfig,
+  TAlertDecryptor,
+  TAlertEncryptor
+} from "./alert-channel-crypto-fns";
+import { TAlertChannelDALFactory } from "./alert-channel-dal";
+import { TAlertChannelRecipientDALFactory } from "./alert-channel-recipient-dal";
+import {
+  TAlertChannelEmbedded,
+  TChannelRecipientInput,
+  TPreparedChannelCreate,
+  TPreparedChannelUpdate
+} from "./alert-channel-service-types";
+import { AlertChannelType } from "./alert-channel-types";
+import { findVerifiedEmailDomains, isOnVerifiedDomain, resolvePrincipalsInScope } from "./alert-principal-scope-fns";
+import { AlertPrincipalType, TAlertRecipientScope } from "./alert-types";
+import { ALERT_CHANNEL_REGISTRY } from "./channels/alert-channel-registry";
+
+export type TAlertChannelServiceFactoryDep = {
+  alertChannelDAL: TAlertChannelDALFactory;
+  alertChannelRecipientDAL: TAlertChannelRecipientDALFactory;
+  orgDAL: Pick<TOrgDALFactory, "findMembership">;
+  projectDAL: Pick<TProjectDALFactory, "findEffectiveProjectSubjectsMembership">;
+  groupDAL: Pick<TGroupDALFactory, "find">;
+  emailDomainDAL: Pick<TEmailDomainDALFactory, "find">;
+};
+
+export type TAlertChannelServiceFactory = ReturnType<typeof alertChannelServiceFactory>;
+
+// What a channel write needs. Channels are only ever created through their owning alert, so authorization
+// is the alert's (the caller has already run the provider's assertPermission) and channel names are not
+// required to be unique.
+export type TCreateChannelInput = {
+  name: string;
+  channelType: AlertChannelType | string;
+  config: Record<string, unknown>;
+  enabled?: boolean;
+  recipients?: TChannelRecipientInput[];
+  orgId: string;
+  projectId?: string | null;
+  recipientScope: TAlertRecipientScope;
+  createdByActorId: string | null;
+  createdByActorType: string;
+};
+
+export type TUpdateChannelInput = {
+  channelId: string;
+  channelType?: AlertChannelType | string;
+  name?: string;
+  config?: Record<string, unknown>;
+  enabled?: boolean;
+  recipients?: TChannelRecipientInput[];
+  recipientScope: TAlertRecipientScope;
+};
+
+const capitalize = (value: string): string => value.charAt(0).toUpperCase() + value.slice(1);
+
+export const alertChannelServiceFactory = ({
+  alertChannelDAL,
+  alertChannelRecipientDAL,
+  orgDAL,
+  projectDAL,
+  groupDAL,
+  emailDomainDAL
+}: TAlertChannelServiceFactoryDep) => {
+  const $idsOfType = (recipients: TChannelRecipientInput[], principalType: AlertPrincipalType) => [
+    ...new Set(recipients.filter((r) => r.principalType === principalType).map((r) => r.principalId))
+  ];
+
+  const $assertProjectMembersRecipients = (
+    projectId: string | null | undefined,
+    recipients: TChannelRecipientInput[]
+  ) => {
+    const projectMembers = recipients.filter((r) => r.principalType === AlertPrincipalType.PROJECT_MEMBERS);
+    if (projectMembers.length === 0) return;
+    if (!projectId) {
+      throw new BadRequestError({ message: "All project members can only be notified by a project alert" });
+    }
+    if (projectMembers.some((r) => r.principalId !== projectId)) {
+      throw new BadRequestError({ message: "All project members must refer to the alert's own project" });
+    }
+  };
+
+  const $assertNoDuplicateRecipients = (recipients: TChannelRecipientInput[]) => {
+    const seen = new Set<string>();
+    const duplicates = new Set<string>();
+    recipients.forEach((recipient) => {
+      const principalId =
+        recipient.principalType === AlertPrincipalType.EMAIL
+          ? recipient.principalId.toLowerCase()
+          : recipient.principalId;
+      const key = `${recipient.principalType}:${principalId}`;
+      if (seen.has(key)) duplicates.add(recipient.principalId);
+      seen.add(key);
+    });
+    if (duplicates.size) {
+      throw new BadRequestError({ message: `Duplicate recipients: ${[...duplicates].join(", ")}` });
+    }
+  };
+
+  const $validateEmailRecipients = async (orgId: string, emails: string[], tx?: Knex) => {
+    if (!emails.length) return;
+
+    const malformed = emails.filter((email) => !z.string().email().safeParse(email).success);
+    if (malformed.length) {
+      throw new BadRequestError({ message: `Invalid email recipients: ${malformed.join(", ")}` });
+    }
+
+    const verifiedDomains = await findVerifiedEmailDomains(emailDomainDAL, orgId, tx);
+    const unverified = emails.filter((email) => !isOnVerifiedDomain(email, verifiedDomains));
+    if (unverified.length) {
+      throw new BadRequestError({
+        message: `Email recipients must use one of your organization's verified domains (Organization Settings > SSO > Email Domains). Not on a verified domain: ${unverified.join(", ")}`
+      });
+    }
+  };
+
+  const assertRecipientTypesAllowed = (scope: TAlertRecipientScope, recipients: TChannelRecipientInput[]) => {
+    if (!scope.allowEmailAddresses && recipients.some((r) => r.principalType === AlertPrincipalType.EMAIL)) {
+      throw new BadRequestError({ message: "This alert type doesn't accept email address recipients" });
+    }
+  };
+
+  // Confirms every recipient principal (user/group) actually belongs to the channel's scope so an
+  // alert can't be made to notify a foreign principal.
+  const validateRecipients = async (
+    orgId: string,
+    scope: TAlertRecipientScope,
+    recipients: TChannelRecipientInput[],
+    tx?: Knex
+  ) => {
+    const { projectId } = scope;
+    assertRecipientTypesAllowed(scope, recipients);
+    $assertNoDuplicateRecipients(recipients);
+    $assertProjectMembersRecipients(projectId, recipients);
+
+    const userIds = $idsOfType(recipients, AlertPrincipalType.USER);
+    const groupIds = $idsOfType(recipients, AlertPrincipalType.GROUP);
+
+    await $validateEmailRecipients(orgId, $idsOfType(recipients, AlertPrincipalType.EMAIL), tx);
+    if (userIds.length === 0 && groupIds.length === 0) return;
+
+    const inScope = await resolvePrincipalsInScope(
+      { orgDAL, projectDAL, groupDAL },
+      { orgId, projectId, userIds, groupIds },
+      tx
+    );
+    const scopeLabel = projectId ? "project" : "organization";
+
+    const missingUsers = userIds.filter((id) => !inScope.userIds.has(id));
+    if (missingUsers.length) {
+      throw new BadRequestError({
+        message: `Some users are not members of the ${scopeLabel}: ${missingUsers.join(", ")}`
+      });
+    }
+
+    const missingGroups = groupIds.filter((id) => !inScope.groupIds.has(id));
+    if (missingGroups.length) {
+      throw new BadRequestError({
+        message: `Some groups are not members of the ${scopeLabel}: ${missingGroups.join(", ")}`
+      });
+    }
+  };
+
+  const $assertRecipientRules = (
+    definition: { directed: boolean },
+    channelType: string,
+    recipients: TChannelRecipientInput[]
+  ) => {
+    if (!definition.directed && recipients.length > 0) {
+      throw new BadRequestError({ message: `${channelType} channels do not take recipients` });
+    }
+    if (definition.directed && recipients.length === 0) {
+      throw new BadRequestError({ message: `${channelType} channels require at least one recipient` });
+    }
+  };
+
+  const $redactConfig = (channelType: string, config: Record<string, unknown>): Record<string, unknown> => {
+    const definition = ALERT_CHANNEL_REGISTRY[channelType as AlertChannelType];
+    if (!definition) return {};
+    const redacted: Record<string, unknown> = {};
+    Object.entries(config).forEach(([key, value]) => {
+      if (!definition.secretFields.includes(key)) redacted[key] = value;
+    });
+    definition.secretFields.forEach((field) => {
+      redacted[`has${capitalize(field)}`] = Boolean(config[field]);
+    });
+    return redacted;
+  };
+
+  const prepareChannelCreate = async (
+    input: TCreateChannelInput,
+    encryptor: TAlertEncryptor,
+    tx?: Knex
+  ): Promise<TPreparedChannelCreate> => {
+    const definition = getChannelDefinition(input.channelType);
+    const recipients = input.recipients ?? [];
+    $assertRecipientRules(definition, input.channelType, recipients);
+    const config = parseChannelConfig(definition, input.channelType, input.config);
+    await validateRecipients(input.orgId, input.recipientScope, recipients, tx);
+
+    return {
+      row: {
+        name: input.name,
+        channelType: input.channelType,
+        encryptedConfig: encryptChannelConfig(config, encryptor),
+        enabled: input.enabled ?? true,
+        orgId: input.orgId,
+        projectId: input.projectId ?? null,
+        createdByActorId: input.createdByActorId,
+        createdByActorType: input.createdByActorType
+      },
+      recipients
+    };
+  };
+
+  // The apply and delete steps take a required tx: a channel only means something together with its
+  // alert membership, which the caller writes in the same transaction.
+  const applyChannelCreate = async (prepared: TPreparedChannelCreate, tx: Knex): Promise<TAlertChannels> => {
+    const created = await alertChannelDAL.create(prepared.row, tx);
+    if (prepared.recipients.length) {
+      await alertChannelRecipientDAL.insertMany(
+        prepared.recipients.map((r) => ({
+          channelId: created.id,
+          principalType: r.principalType,
+          principalId: r.principalId
+        })),
+        tx
+      );
+    }
+    return created;
+  };
+
+  const prepareChannelUpdate = async (
+    input: TUpdateChannelInput,
+    channel: TAlertChannels,
+    cipher: { encryptor: TAlertEncryptor; decryptor: TAlertDecryptor },
+    tx?: Knex
+  ): Promise<TPreparedChannelUpdate> => {
+    if (input.channelType !== undefined && input.channelType !== channel.channelType) {
+      throw new BadRequestError({
+        message: `Channel '${channel.id}' is a ${channel.channelType} channel and its type cannot be changed to ${input.channelType}`
+      });
+    }
+
+    const definition = getChannelDefinition(channel.channelType);
+    const existingConfig = decryptChannelConfig<Record<string, unknown>>(channel.encryptedConfig, cipher.decryptor);
+
+    let finalConfig = existingConfig;
+    if (input.config !== undefined) {
+      const merged = mergeChannelConfigWithStored(channel.channelType, input.config, existingConfig);
+      finalConfig = parseChannelConfig(definition, channel.channelType, merged);
+    }
+
+    const { recipients } = input;
+    if (recipients !== undefined) {
+      $assertRecipientRules(definition, channel.channelType, recipients);
+      await validateRecipients(channel.orgId, input.recipientScope, recipients, tx);
+    }
+
+    return {
+      channelId: channel.id,
+      patch: {
+        ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+        ...(input.config !== undefined ? { encryptedConfig: encryptChannelConfig(finalConfig, cipher.encryptor) } : {})
+      },
+      recipients
+    };
+  };
+
+  const applyChannelUpdate = async (prepared: TPreparedChannelUpdate, tx: Knex): Promise<void> => {
+    await alertChannelDAL.updateById(prepared.channelId, prepared.patch, tx);
+
+    if (prepared.recipients !== undefined) {
+      await alertChannelRecipientDAL.deleteByChannelId(prepared.channelId, tx);
+      if (prepared.recipients.length) {
+        await alertChannelRecipientDAL.insertMany(
+          prepared.recipients.map((r) => ({
+            channelId: prepared.channelId,
+            principalType: r.principalType,
+            principalId: r.principalId
+          })),
+          tx
+        );
+      }
+    }
+  };
+
+  // For callers that carry recipient lists in from outside the alert module, which can name someone who
+  // has since left the scope. An out-of-scope id is dropped rather than failing the whole write.
+  const filterRecipientsInScope = async (
+    scope: { orgId: string; projectId?: string | null },
+    recipients: TChannelRecipientInput[],
+    tx?: Knex
+  ): Promise<TChannelRecipientInput[]> => {
+    const userIds = $idsOfType(recipients, AlertPrincipalType.USER);
+    const groupIds = $idsOfType(recipients, AlertPrincipalType.GROUP);
+    const inScope =
+      userIds.length || groupIds.length
+        ? await resolvePrincipalsInScope(
+            { orgDAL, projectDAL, groupDAL },
+            { orgId: scope.orgId, projectId: scope.projectId, userIds, groupIds },
+            tx
+          )
+        : { userIds: new Set<string>(), groupIds: new Set<string>() };
+
+    return recipients.filter((r) => {
+      if (r.principalType === AlertPrincipalType.USER) return inScope.userIds.has(r.principalId);
+      if (r.principalType === AlertPrincipalType.GROUP) return inScope.groupIds.has(r.principalId);
+      if (r.principalType === AlertPrincipalType.PROJECT_MEMBERS) {
+        return Boolean(scope.projectId) && r.principalId === scope.projectId;
+      }
+      return false;
+    });
+  };
+
+  const deleteChannel = async (channelId: string, tx: Knex): Promise<void> => {
+    await alertChannelDAL.deleteById(channelId, tx);
+  };
+
+  const getDetailsForChannels = async (
+    channels: TAlertChannels[],
+    cipher: { decryptor: TAlertDecryptor },
+    tx?: Knex
+  ): Promise<TAlertChannelEmbedded[]> => {
+    if (channels.length === 0) return [];
+
+    const recipients = await alertChannelRecipientDAL.findByChannelIds(
+      channels.map((c) => c.id),
+      tx
+    );
+    const recipientsByChannel = new Map<string, { principalType: string; principalId: string }[]>();
+    recipients.forEach((r) => {
+      const list = recipientsByChannel.get(r.channelId) ?? [];
+      list.push({ principalType: r.principalType, principalId: r.principalId });
+      recipientsByChannel.set(r.channelId, list);
+    });
+
+    return channels.map((channel) => {
+      const config = decryptChannelConfig<Record<string, unknown>>(channel.encryptedConfig, cipher.decryptor);
+      return {
+        id: channel.id,
+        name: channel.name,
+        channelType: channel.channelType,
+        enabled: channel.enabled,
+        config: $redactConfig(channel.channelType, config),
+        recipients: recipientsByChannel.get(channel.id) ?? [],
+        createdAt: channel.createdAt,
+        updatedAt: channel.updatedAt
+      };
+    });
+  };
+
+  return {
+    prepareChannelCreate,
+    applyChannelCreate,
+    prepareChannelUpdate,
+    applyChannelUpdate,
+    deleteChannel,
+    getDetailsForChannels,
+    validateRecipients,
+    assertRecipientTypesAllowed,
+    filterRecipientsInScope
+  };
+};

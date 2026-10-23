@@ -28,6 +28,8 @@ export const shortenUuid = (uuid: string): string => {
 const UUID_TEST_VALUE = "0".repeat(32);
 const SHORT_UUID_TEST_VALUE = "0".repeat(SHORTENED_UUID_LENGTH);
 
+const PAN_OS_NAME_DISALLOWED_CHARS = new RE2("[^a-zA-Z0-9_-]", "g");
+
 // Per-destination set of characters allowed in a resource name. Free-text placeholder values
 // ({{commonName}} and {{applicationName}}) are sanitized to this set at compile time so a value
 // like "app.example.com" can't produce a name the destination rejects (e.g. Azure Key Vault and
@@ -36,11 +38,17 @@ const NAME_VALUE_DISALLOWED_CHARS: Partial<Record<PkiSync, RE2>> = {
   [PkiSync.AzureKeyVault]: new RE2("[^a-zA-Z0-9-]", "g"),
   [PkiSync.CloudflareCustomCertificate]: new RE2("[^a-zA-Z0-9_-]", "g"),
   [PkiSync.Chef]: new RE2("[^a-zA-Z0-9_-]", "g"),
+  [PkiSync.GcpCertificateManager]: new RE2("[^a-zA-Z0-9-]", "g"),
   [PkiSync.AwsCertificateManager]: new RE2("[^a-zA-Z0-9 _-]", "g"),
   [PkiSync.AwsElasticLoadBalancer]: new RE2("[^a-zA-Z0-9 _-]", "g"),
   [PkiSync.AwsSecretsManager]: new RE2("[^a-zA-Z0-9_-]", "g"),
   [PkiSync.NetScaler]: new RE2("[^a-zA-Z0-9._-]", "g"),
-  [PkiSync.F5BigIp]: new RE2("[^a-zA-Z0-9._-]", "g")
+  [PkiSync.PaloAltoNetworks]: PAN_OS_NAME_DISALLOWED_CHARS,
+  [PkiSync.PaloAltoNetworksSslTlsProfile]: PAN_OS_NAME_DISALLOWED_CHARS,
+  [PkiSync.F5BigIp]: new RE2("[^a-zA-Z0-9._-]", "g"),
+  [PkiSync.KempLoadMaster]: new RE2("[^a-zA-Z0-9._-]", "g"),
+  [PkiSync.LinuxServer]: new RE2("[^a-zA-Z0-9._-]", "g"),
+  [PkiSync.WindowsServer]: new RE2("[^a-zA-Z0-9._-]", "g")
 };
 
 export const sanitizeCertificateNameValue = (value: string, destination?: PkiSync): string => {
@@ -55,6 +63,12 @@ export const SHORT_UUID_NAME_REGEX_FRAGMENT = "[0-9A-Za-z]{22}";
 
 export const certificateNameSchemaHasFreeTextPlaceholder = (schema?: string): boolean =>
   Boolean(schema && (schema.includes("{{commonName}}") || schema.includes("{{applicationName}}")));
+
+const ANY_PLACEHOLDER_REGEX = new RE2(
+  "\\{\\{(certificateId|shortCertificateId|profileId|applicationId|applicationName|commonName)\\}\\}"
+);
+export const certificateNameSchemaAllowsMultipleCertificates = (schema?: string): boolean =>
+  Boolean(schema && ANY_PLACEHOLDER_REGEX.test(schema));
 
 const PLACEHOLDER_OR_CHAR_REGEX = new RE2(
   "\\{\\{(certificateId|shortCertificateId|profileId|applicationId|applicationName|commonName)\\}\\}|[\\s\\S]",

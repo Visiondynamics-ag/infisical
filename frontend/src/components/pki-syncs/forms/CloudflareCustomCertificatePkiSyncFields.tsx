@@ -1,11 +1,16 @@
 import { Controller, useFormContext } from "react-hook-form";
-import { SingleValue } from "react-select";
+import { Info } from "lucide-react";
 
-import { FilterableSelect, FormControl } from "@app/components/v2";
 import {
-  TCloudflareZone,
-  useCloudflareConnectionListZones
-} from "@app/hooks/api/appConnections/cloudflare";
+  Combobox,
+  Field,
+  FieldError,
+  FieldLabel,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger
+} from "@app/components/v3";
+import { useCloudflareConnectionListZones } from "@app/hooks/api/appConnections/cloudflare";
 import { PkiSync } from "@app/hooks/api/pkiSyncs";
 
 import { TPkiSyncForm } from "./schemas/pki-sync-schema";
@@ -37,25 +42,40 @@ export const CloudflareCustomCertificatePkiSyncFields = () => {
         name="destinationConfig.zoneId"
         control={control}
         render={({ field: { value, onChange }, fieldState: { error } }) => (
-          <FormControl
-            isError={Boolean(error)}
-            errorText={error?.message}
-            label="Zone"
-            tooltipText="Select the Cloudflare zone (domain) where the custom SSL certificate will be uploaded."
-          >
-            <FilterableSelect
+          <Field className="mb-4">
+            <FieldLabel htmlFor="pki-sync-cloudflare-zone">
+              Zone
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Info />
+                </TooltipTrigger>
+                <TooltipContent className="max-w-sm">
+                  Select the Cloudflare zone (domain) where the custom SSL certificate will be
+                  uploaded.
+                </TooltipContent>
+              </Tooltip>
+            </FieldLabel>
+            <Combobox
+              id="pki-sync-cloudflare-zone"
               isLoading={isZonesLoading && !!connectionId}
               isDisabled={!connectionId}
-              value={zones.find((zone) => zone.id === value)}
-              onChange={(option) => {
-                onChange((option as SingleValue<TCloudflareZone>)?.id ?? "");
+              value={
+                zones.find((zone) => zone.id === value) ||
+                (value ? { id: value, name: value } : null)
+              }
+              isClearable={false}
+              onValueChange={(option) => {
+                onChange(option.id);
               }}
               options={zones}
               placeholder={connectionId ? "Select a zone..." : "Select a connection first"}
               getOptionLabel={(option) => option.name}
               getOptionValue={(option) => option.id}
+              getOptionKeywords={(option) => [option.id]}
+              isError={Boolean(error)}
             />
-          </FormControl>
+            <FieldError errors={[error]} />
+          </Field>
         )}
       />
     </>

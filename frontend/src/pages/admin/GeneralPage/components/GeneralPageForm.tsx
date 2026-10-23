@@ -1,21 +1,39 @@
+import { type ReactNode, useEffect, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
-import { faAt } from "@fortawesome/free-solid-svg-icons";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { AtSign } from "lucide-react";
 import { z } from "zod";
 
 import { createNotification } from "@app/components/notifications";
 import {
   Button,
-  FormControl,
-  Input,
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldFeedback,
+  FieldGroup,
+  FieldLabel,
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
   Select,
-  SelectClear,
+  SelectContent,
   SelectItem,
-  Switch,
-  TextArea
-} from "@app/components/v2";
+  SelectTrigger,
+  SelectValue,
+  TagsInput,
+  TextArea,
+  Toggle
+} from "@app/components/v3";
 import { useServerConfig } from "@app/context";
+import { isStorageHostname } from "@app/helpers/appConnections";
+import { allowedEmailDomainsSchema } from "@app/helpers/email";
 import { useGetOrganizations, useUpdateServerConfig } from "@app/hooks/api";
 
 enum SignUpModes {
@@ -25,277 +43,494 @@ enum SignUpModes {
 
 const formSchema = z.object({
   signUpMode: z.nativeEnum(SignUpModes),
-  allowedSignUpDomain: z.string().optional().nullable(),
-  trustSamlEmails: z.boolean(),
+  allowedSignUpDomain: allowedEmailDomainsSchema.optional().nullable(),
   trustLdapEmails: z.boolean(),
-  trustOidcEmails: z.boolean(),
   defaultAuthOrgId: z.string(),
   authConsentContent: z.string().optional().default(""),
   pageFrameContent: z.string().optional().default("")
 });
 
-type TDashboardForm = z.infer<typeof formSchema>;
+const signUpFormSchema = formSchema.pick({
+  signUpMode: true,
+  allowedSignUpDomain: true
+});
+const defaultOrganizationFormSchema = formSchema.pick({ defaultAuthOrgId: true });
+const trustLdapEmailsFormSchema = formSchema.pick({ trustLdapEmails: true });
+const noticesFormSchema = formSchema.pick({ authConsentContent: true, pageFrameContent: true });
+const storageHostnamesFormSchema = z.object({
+  allowedStorageHostnames: z.string().array().max(50, "Add at most 50 hostnames")
+});
 
-export const GeneralPageForm = () => {
-  const data = useServerConfig();
-  const { config } = data;
+const NO_STORAGE_HOSTNAMES: string[] = [];
 
+type TSignUpForm = z.infer<typeof signUpFormSchema>;
+type TDefaultOrganizationForm = z.infer<typeof defaultOrganizationFormSchema>;
+type TTrustLdapEmailsForm = z.infer<typeof trustLdapEmailsFormSchema>;
+type TNoticesForm = z.infer<typeof noticesFormSchema>;
+type TStorageHostnamesForm = z.infer<typeof storageHostnamesFormSchema>;
+
+type GeneralSettingsCardProps = {
+  title: string;
+  description: string;
+  children?: ReactNode;
+  isSubmitting: boolean;
+  isDirty: boolean;
+};
+
+const GeneralSettingsCard = ({
+  title,
+  description,
+  children,
+  isSubmitting,
+  isDirty
+}: GeneralSettingsCardProps) => (
+  <Card className="gap-0 overflow-hidden p-0">
+    <CardHeader className="p-6">
+      <CardTitle className="font-alliance">{title}</CardTitle>
+      <CardDescription>{description}</CardDescription>
+    </CardHeader>
+    {children && <CardContent className="px-6 pb-6">{children}</CardContent>}
+    <CardFooter className="min-h-8 justify-end border-t border-neutral/15 bg-neutral/5 p-4">
+      <Button
+        variant="neutral"
+        size="sm"
+        type="submit"
+        isPending={isSubmitting}
+        isDisabled={!isDirty}
+      >
+        Save
+      </Button>
+    </CardFooter>
+  </Card>
+);
+
+type SignUpSettingsCardProps = {
+  allowSignUp: boolean;
+  allowedSignUpDomain: string;
+};
+
+const SignUpSettingsCard = ({ allowSignUp, allowedSignUpDomain }: SignUpSettingsCardProps) => {
+  const { mutateAsync: updateServerConfig } = useUpdateServerConfig();
   const {
     control,
     handleSubmit,
+    reset,
     watch,
     formState: { isSubmitting, isDirty }
-  } = useForm<TDashboardForm>({
-    resolver: zodResolver(formSchema),
-    values: {
+  } = useForm<TSignUpForm>({
+    resolver: zodResolver(signUpFormSchema),
+    defaultValues: {
       // eslint-disable-next-line
-      signUpMode: config.allowSignUp ? SignUpModes.Anyone : SignUpModes.Disabled,
-      allowedSignUpDomain: config.allowedSignUpDomain,
-      trustSamlEmails: config.trustSamlEmails ?? false,
-      trustLdapEmails: config.trustLdapEmails ?? false,
-      trustOidcEmails: config.trustOidcEmails ?? false,
-      defaultAuthOrgId: config.defaultAuthOrgId ?? "",
-      authConsentContent: config.authConsentContent ?? "",
-      pageFrameContent: config.pageFrameContent ?? ""
+      signUpMode: allowSignUp ? SignUpModes.Anyone : SignUpModes.Disabled,
+      allowedSignUpDomain
     }
   });
 
-  const signUpMode = watch("signUpMode");
-  const defaultAuthOrgId = watch("defaultAuthOrgId");
-
-  const { mutateAsync: updateServerConfig } = useUpdateServerConfig();
-
-  const organizations = useGetOrganizations();
-
-  const onFormSubmit = async (formData: TDashboardForm) => {
-    const {
-      allowedSignUpDomain,
-      trustSamlEmails,
-      trustLdapEmails,
-      trustOidcEmails,
-      authConsentContent,
-      pageFrameContent
-    } = formData;
-
-    await updateServerConfig({
-      defaultAuthOrgId: defaultAuthOrgId || null,
-      allowSignUp: signUpMode !== SignUpModes.Disabled,
-      allowedSignUpDomain: signUpMode === SignUpModes.Anyone ? allowedSignUpDomain : null,
-      trustSamlEmails,
-      trustLdapEmails,
-      trustOidcEmails,
-      authConsentContent,
-      pageFrameContent
+  useEffect(() => {
+    reset({
+      // eslint-disable-next-line
+      signUpMode: allowSignUp ? SignUpModes.Anyone : SignUpModes.Disabled,
+      allowedSignUpDomain
     });
+  }, [allowSignUp, allowedSignUpDomain, reset]);
+
+  const signUpMode = watch("signUpMode");
+  const onFormSubmit = async (formData: TSignUpForm) => {
+    await updateServerConfig({
+      allowSignUp: formData.signUpMode !== SignUpModes.Disabled,
+      allowedSignUpDomain:
+        formData.signUpMode === SignUpModes.Anyone ? formData.allowedSignUpDomain : null
+    });
+    reset(formData);
     createNotification({
-      text: "Successfully changed sign up setting.",
+      text: "Signup settings updated.",
       type: "success"
     });
   };
 
   return (
-    <form
-      className="space-y-6 rounded-lg border border-mineshaft-600 bg-mineshaft-900 p-4"
-      onSubmit={handleSubmit(onFormSubmit)}
-    >
-      <div className="flex flex-col justify-start">
-        <div className="mb-2 text-xl font-medium text-mineshaft-100">Allow user signups</div>
-        <div className="mb-4 max-w-sm text-sm text-mineshaft-400">
-          Select if you want users to be able to signup freely into your Infisical instance.
-        </div>
-        <Controller
-          control={control}
-          name="signUpMode"
-          render={({ field: { onChange, ...field }, fieldState: { error } }) => (
-            <FormControl className="max-w-sm" errorText={error?.message} isError={Boolean(error)}>
-              <Select
-                className="w-full bg-mineshaft-700"
-                dropdownContainerClassName="bg-mineshaft-800"
-                defaultValue={field.value}
-                onValueChange={(e) => onChange(e)}
-                {...field}
-              >
-                <SelectItem value={SignUpModes.Disabled}>Disabled</SelectItem>
-                <SelectItem value={SignUpModes.Anyone}>Anyone</SelectItem>
-              </Select>
-            </FormControl>
-          )}
-        />
-      </div>
-      {signUpMode === "anyone" && (
-        <div className="flex flex-col justify-start">
-          <div className="mb-4 text-xl font-medium text-mineshaft-100">
-            Restrict signup by email domain(s)
-          </div>
+    <form onSubmit={handleSubmit(onFormSubmit)}>
+      <GeneralSettingsCard
+        title="Allow User Signups"
+        description="Choose whether users can sign up for this Infisical instance."
+        isSubmitting={isSubmitting}
+        isDirty={isDirty}
+      >
+        <FieldGroup>
           <Controller
             control={control}
-            defaultValue=""
-            name="allowedSignUpDomain"
-            render={({ field, fieldState: { error } }) => (
-              <FormControl
-                label="Leave blank to allow any email domains"
-                className="w-72"
-                isError={Boolean(error)}
-                errorText={error?.message}
-              >
-                <Input
-                  {...field}
-                  value={field.value || ""}
-                  placeholder="gmail.com, aws.com, redhat.com"
-                  leftIcon={<FontAwesomeIcon icon={faAt} />}
-                />
-              </FormControl>
+            name="signUpMode"
+            render={({ field: { onChange, value }, fieldState: { error } }) => (
+              <Field className="max-w-sm">
+                <FieldLabel htmlFor="signup-mode">Signup mode</FieldLabel>
+                <Select value={value} onValueChange={onChange}>
+                  <SelectTrigger id="signup-mode" className="w-full" isError={Boolean(error)}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={SignUpModes.Disabled}>Disabled</SelectItem>
+                    <SelectItem value={SignUpModes.Anyone}>Anyone</SelectItem>
+                  </SelectContent>
+                </Select>
+                <FieldError>{error?.message}</FieldError>
+              </Field>
             )}
           />
-        </div>
-      )}
+          {signUpMode === SignUpModes.Anyone && (
+            <Controller
+              control={control}
+              defaultValue=""
+              name="allowedSignUpDomain"
+              render={({ field, fieldState: { error } }) => (
+                <Field className="max-w-sm" data-invalid={Boolean(error)}>
+                  <FieldLabel htmlFor="allowed-signup-domains">Allowed email domains</FieldLabel>
+                  <InputGroup>
+                    <InputGroupAddon>
+                      <AtSign />
+                    </InputGroupAddon>
+                    <InputGroupInput
+                      id="allowed-signup-domains"
+                      {...field}
+                      aria-describedby="allowed-signup-domains-feedback"
+                      isError={Boolean(error)}
+                      value={field.value || ""}
+                      placeholder="gmail.com, aws.com, redhat.com"
+                    />
+                  </InputGroup>
+                  <FieldFeedback
+                    id="allowed-signup-domains-feedback"
+                    description="Leave blank to allow any email domain."
+                    error={error?.message}
+                  />
+                </Field>
+              )}
+            />
+          )}
+        </FieldGroup>
+      </GeneralSettingsCard>
+    </form>
+  );
+};
 
-      <div className="flex flex-col justify-start">
-        <div className="mb-2 text-xl font-medium text-mineshaft-100">Default organization</div>
-        <div className="mb-4 max-w-sm text-sm text-mineshaft-400">
-          Select the default organization you want to set for SAML/LDAP/OIDC/Github logins. When
-          selected, user logins will be automatically scoped to the selected organization.
-        </div>
+type DefaultOrganizationSettingsCardProps = {
+  defaultAuthOrgId: string;
+};
+
+const DefaultOrganizationSettingsCard = ({
+  defaultAuthOrgId
+}: DefaultOrganizationSettingsCardProps) => {
+  const organizations = useGetOrganizations();
+  const { mutateAsync: updateServerConfig } = useUpdateServerConfig();
+  const {
+    control,
+    handleSubmit,
+    reset,
+    formState: { isSubmitting, isDirty }
+  } = useForm<TDefaultOrganizationForm>({
+    resolver: zodResolver(defaultOrganizationFormSchema),
+    defaultValues: {
+      defaultAuthOrgId
+    }
+  });
+
+  useEffect(() => {
+    reset({ defaultAuthOrgId });
+  }, [defaultAuthOrgId, reset]);
+
+  const onFormSubmit = async (formData: TDefaultOrganizationForm) => {
+    await updateServerConfig({
+      defaultAuthOrgId: formData.defaultAuthOrgId || null
+    });
+    reset(formData);
+    createNotification({
+      text: "Default organization updated.",
+      type: "success"
+    });
+  };
+
+  return (
+    <form onSubmit={handleSubmit(onFormSubmit)}>
+      <GeneralSettingsCard
+        title="Default Organization"
+        description="Select the default organization you want to set for SAML, LDAP, OIDC, and GitHub logins. When selected, user logins will be automatically scoped to the selected organization."
+        isSubmitting={isSubmitting}
+        isDirty={isDirty}
+      >
         <Controller
           control={control}
           name="defaultAuthOrgId"
-          render={({ field: { onChange, ...field }, fieldState: { error } }) => (
-            <FormControl className="max-w-sm" errorText={error?.message} isError={Boolean(error)}>
+          render={({ field: { onChange, value }, fieldState: { error } }) => (
+            <Field className="max-w-sm">
+              <FieldLabel htmlFor="default-auth-org">Organization</FieldLabel>
               <Select
-                placeholder="Allow all organizations"
-                className="w-full bg-mineshaft-700"
-                dropdownContainerClassName="bg-mineshaft-800"
-                defaultValue={field.value ?? " "}
-                onValueChange={(e) => onChange(e)}
-                {...field}
+                value={value || "all"}
+                onValueChange={(next) => onChange(next === "all" ? "" : next)}
               >
-                <SelectClear
-                  selectValue={defaultAuthOrgId}
-                  onClear={() => {
-                    onChange("");
-                  }}
-                >
-                  Allow all organizations
-                </SelectClear>
-                {organizations.data?.map((org) => (
-                  <SelectItem key={org.id} value={org.id}>
-                    {org.name}
-                  </SelectItem>
-                ))}
+                <SelectTrigger id="default-auth-org" className="w-full" isError={Boolean(error)}>
+                  <SelectValue placeholder="Allow all organizations" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Allow all organizations</SelectItem>
+                  {organizations.data?.map((org) => (
+                    <SelectItem key={org.id} value={org.id}>
+                      {org.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
               </Select>
-            </FormControl>
+              <FieldError>{error?.message}</FieldError>
+            </Field>
           )}
         />
-      </div>
-
-      <div className="flex flex-col justify-start">
-        <div className="mb-2 text-xl font-medium text-mineshaft-100">Trust emails</div>
-        <div className="mb-4 max-w-sm text-sm text-mineshaft-400">
-          Select if you want Infisical to trust external emails from SAML/LDAP/OIDC identity
-          providers. If set to false, then Infisical will prompt SAML/LDAP/OIDC provisioned users to
-          verify their email upon their first login.
-        </div>
-        <Controller
-          control={control}
-          name="trustSamlEmails"
-          render={({ field, fieldState: { error } }) => {
-            return (
-              <FormControl isError={Boolean(error)} errorText={error?.message}>
-                <Switch
-                  id="trust-saml-emails"
-                  onCheckedChange={(value) => field.onChange(value)}
-                  isChecked={field.value}
-                >
-                  <p className="w-full">Trust SAML emails</p>
-                </Switch>
-              </FormControl>
-            );
-          }}
-        />
-        <Controller
-          control={control}
-          name="trustLdapEmails"
-          render={({ field, fieldState: { error } }) => {
-            return (
-              <FormControl isError={Boolean(error)} errorText={error?.message}>
-                <Switch
-                  id="trust-ldap-emails"
-                  onCheckedChange={(value) => field.onChange(value)}
-                  isChecked={field.value}
-                >
-                  <p className="w-full">Trust LDAP emails</p>
-                </Switch>
-              </FormControl>
-            );
-          }}
-        />
-        <Controller
-          control={control}
-          name="trustOidcEmails"
-          render={({ field, fieldState: { error } }) => {
-            return (
-              <FormControl isError={Boolean(error)} errorText={error?.message}>
-                <Switch
-                  id="trust-oidc-emails"
-                  onCheckedChange={(value) => field.onChange(value)}
-                  isChecked={field.value}
-                >
-                  <p className="w-full">Trust OIDC emails</p>
-                </Switch>
-              </FormControl>
-            );
-          }}
-        />
-      </div>
-
-      <div className="flex flex-col justify-start">
-        <div className="mb-2 text-xl font-medium text-mineshaft-100">Notices</div>
-        <div className="mb-4 max-w-lg text-sm text-mineshaft-400">
-          Configure system-wide notification banners and security messages. These settings control
-          the text displayed to users during authentication and throughout their session
-        </div>
-        <Controller
-          render={({ field, fieldState: { error } }) => (
-            <FormControl
-              isError={Boolean(error)}
-              errorText={error?.message}
-              label="Auth Consent Content"
-              tooltipText="Formatting supported: HTML, Markdown, Plain text"
-            >
-              <TextArea
-                placeholder="**Auth Consent Message**"
-                {...field}
-                rows={3}
-                className="h-48 thin-scrollbar max-w-lg resize-none! bg-mineshaft-800"
-              />
-            </FormControl>
-          )}
-          control={control}
-          name="authConsentContent"
-        />
-        <Controller
-          render={({ field, fieldState: { error } }) => (
-            <FormControl
-              isError={Boolean(error)}
-              errorText={error?.message}
-              label="Page Frame Content"
-              tooltipText="Formatting supported: HTML, Markdown, Plain text"
-            >
-              <TextArea
-                placeholder='<div style="background-color: red">TOP SECRET</div>'
-                {...field}
-                rows={3}
-                className="h-48 thin-scrollbar max-w-lg resize-none! bg-mineshaft-800"
-              />
-            </FormControl>
-          )}
-          control={control}
-          name="pageFrameContent"
-        />
-      </div>
-      <Button type="submit" isLoading={isSubmitting} isDisabled={isSubmitting || !isDirty}>
-        Save
-      </Button>
+      </GeneralSettingsCard>
     </form>
+  );
+};
+
+type TrustLdapEmailsSettingsCardProps = {
+  trustLdapEmails: boolean;
+};
+
+const TrustLdapEmailsSettingsCard = ({ trustLdapEmails }: TrustLdapEmailsSettingsCardProps) => {
+  const { mutateAsync: updateServerConfig } = useUpdateServerConfig();
+  const {
+    control,
+    handleSubmit,
+    reset,
+    formState: { isSubmitting, isDirty }
+  } = useForm<TTrustLdapEmailsForm>({
+    resolver: zodResolver(trustLdapEmailsFormSchema),
+    defaultValues: {
+      trustLdapEmails
+    }
+  });
+
+  useEffect(() => {
+    reset({ trustLdapEmails });
+  }, [trustLdapEmails, reset]);
+
+  const onFormSubmit = async (formData: TTrustLdapEmailsForm) => {
+    await updateServerConfig(formData);
+    reset(formData);
+    createNotification({
+      text: "LDAP email verification setting updated.",
+      type: "success"
+    });
+  };
+
+  return (
+    <form onSubmit={handleSubmit(onFormSubmit)}>
+      <Controller
+        control={control}
+        name="trustLdapEmails"
+        render={({ field }) => (
+          <GeneralSettingsCard
+            title="LDAP Email Verification"
+            description="Choose whether users provisioned through LDAP must verify their email address on first login. SAML and OIDC users remain unaffected."
+            isSubmitting={isSubmitting}
+            isDirty={isDirty}
+          >
+            <div className="flex items-center gap-3">
+              <Toggle
+                id="trust-ldap-emails"
+                aria-label="Trust LDAP emails"
+                variant="neutral"
+                checked={field.value}
+                onCheckedChange={field.onChange}
+              />
+              <FieldLabel
+                htmlFor="trust-ldap-emails"
+                className="cursor-pointer text-sm font-medium text-foreground"
+              >
+                Trust LDAP emails
+              </FieldLabel>
+            </div>
+          </GeneralSettingsCard>
+        )}
+      />
+    </form>
+  );
+};
+
+type NoticesSettingsCardProps = {
+  authConsentContent: string;
+  pageFrameContent: string;
+};
+
+const NoticesSettingsCard = ({
+  authConsentContent,
+  pageFrameContent
+}: NoticesSettingsCardProps) => {
+  const { mutateAsync: updateServerConfig } = useUpdateServerConfig();
+  const {
+    control,
+    handleSubmit,
+    reset,
+    formState: { isSubmitting, isDirty }
+  } = useForm<TNoticesForm>({
+    resolver: zodResolver(noticesFormSchema),
+    defaultValues: {
+      authConsentContent,
+      pageFrameContent
+    }
+  });
+
+  useEffect(() => {
+    reset({ authConsentContent, pageFrameContent });
+  }, [authConsentContent, pageFrameContent, reset]);
+
+  const onFormSubmit = async (formData: TNoticesForm) => {
+    await updateServerConfig(formData);
+    reset(formData);
+    createNotification({
+      text: "Notices updated.",
+      type: "success"
+    });
+  };
+
+  return (
+    <form onSubmit={handleSubmit(onFormSubmit)}>
+      <GeneralSettingsCard
+        title="Notices"
+        description="Configure system-wide notification banners and security messages. These settings control the text displayed during authentication and throughout a user's session."
+        isSubmitting={isSubmitting}
+        isDirty={isDirty}
+      >
+        <FieldGroup>
+          <Controller
+            render={({ field, fieldState: { error } }) => (
+              <Field>
+                <FieldLabel htmlFor="auth-consent-content">Auth consent content</FieldLabel>
+                <TextArea
+                  id="auth-consent-content"
+                  placeholder="**Auth Consent Message**"
+                  {...field}
+                  rows={3}
+                  className="h-48 max-w-lg resize-none"
+                />
+                <FieldDescription>Supports HTML, Markdown, and plain text.</FieldDescription>
+                <FieldError>{error?.message}</FieldError>
+              </Field>
+            )}
+            control={control}
+            name="authConsentContent"
+          />
+          <Controller
+            render={({ field, fieldState: { error } }) => (
+              <Field>
+                <FieldLabel htmlFor="page-frame-content">Page frame content</FieldLabel>
+                <TextArea
+                  id="page-frame-content"
+                  placeholder='<div style="background-color: red">TOP SECRET</div>'
+                  {...field}
+                  rows={3}
+                  className="h-48 max-w-lg resize-none"
+                />
+                <FieldDescription>Supports HTML, Markdown, and plain text.</FieldDescription>
+                <FieldError>{error?.message}</FieldError>
+              </Field>
+            )}
+            control={control}
+            name="pageFrameContent"
+          />
+        </FieldGroup>
+      </GeneralSettingsCard>
+    </form>
+  );
+};
+
+type StorageHostnamesSettingsCardProps = {
+  allowedStorageHostnames: string[];
+};
+
+const StorageHostnamesSettingsCard = ({
+  allowedStorageHostnames
+}: StorageHostnamesSettingsCardProps) => {
+  const [hostnameError, setHostnameError] = useState<string | null>(null);
+  const { mutateAsync: updateServerConfig } = useUpdateServerConfig();
+  const {
+    control,
+    handleSubmit,
+    reset,
+    formState: { isSubmitting, isDirty }
+  } = useForm<TStorageHostnamesForm>({
+    resolver: zodResolver(storageHostnamesFormSchema),
+    defaultValues: { allowedStorageHostnames }
+  });
+
+  useEffect(() => {
+    reset({ allowedStorageHostnames });
+  }, [allowedStorageHostnames, reset]);
+
+  const onFormSubmit = async (formData: TStorageHostnamesForm) => {
+    await updateServerConfig(formData);
+    reset(formData);
+    createNotification({
+      text: "Allowed storage hostnames updated. Reload the page before using them in this tab.",
+      type: "success"
+    });
+  };
+
+  return (
+    <form onSubmit={handleSubmit(onFormSubmit)}>
+      <GeneralSettingsCard
+        title="Allowed Storage Hostnames"
+        description="Let S3-Compatible Storage connections and session playback use your own storage servers, such as MinIO."
+        isSubmitting={isSubmitting}
+        isDirty={isDirty}
+      >
+        <Controller
+          control={control}
+          name="allowedStorageHostnames"
+          render={({ field, fieldState: { error } }) => (
+            <Field className="max-w-lg" data-invalid={Boolean(hostnameError || error)}>
+              <FieldLabel htmlFor="allowed-storage-hostnames">Hostnames</FieldLabel>
+              <TagsInput
+                id="allowed-storage-hostnames"
+                value={field.value}
+                onValueChange={field.onChange}
+                validateTag={(tag, existing) => {
+                  if (!isStorageHostname(tag)) {
+                    return "Enter a lowercase hostname, with a port if it isn't 443, such as minio.example.com:9000";
+                  }
+                  return existing.includes(tag) ? `${tag} is already allowed` : null;
+                }}
+                onValidationError={setHostnameError}
+                isError={Boolean(hostnameError || error)}
+                aria-describedby="allowed-storage-hostnames-feedback"
+                placeholder="minio.example.com"
+              />
+              <FieldFeedback
+                id="allowed-storage-hostnames-feedback"
+                description="Include the port if it isn't 443."
+                error={hostnameError ?? error?.message}
+              />
+            </Field>
+          )}
+        />
+      </GeneralSettingsCard>
+    </form>
+  );
+};
+
+export const GeneralPageForm = () => {
+  const { config } = useServerConfig();
+
+  return (
+    <div className="space-y-6">
+      <SignUpSettingsCard
+        allowSignUp={config.allowSignUp}
+        allowedSignUpDomain={config.allowedSignUpDomain ?? ""}
+      />
+      <DefaultOrganizationSettingsCard defaultAuthOrgId={config.defaultAuthOrgId ?? ""} />
+      <TrustLdapEmailsSettingsCard trustLdapEmails={config.trustLdapEmails ?? false} />
+      <NoticesSettingsCard
+        authConsentContent={config.authConsentContent ?? ""}
+        pageFrameContent={config.pageFrameContent ?? ""}
+      />
+      <StorageHostnamesSettingsCard
+        allowedStorageHostnames={config.allowedStorageHostnames ?? NO_STORAGE_HOSTNAMES}
+      />
+    </div>
   );
 };

@@ -5,6 +5,7 @@ import { TPermissionServiceFactory } from "@app/ee/services/permission/permissio
 import { BadRequestError, ForbiddenRequestError, InternalServerError, NotFoundError } from "@app/lib/errors";
 import { alphaNumericNanoId } from "@app/lib/nanoid";
 import { ActorType } from "@app/services/auth/auth-type";
+import { isExternalCaKeySource } from "@app/services/certificate-authority/ca-key-source/ca-key-source-fns";
 import { TCertificateAuthorityCertDALFactory } from "@app/services/certificate-authority/certificate-authority-cert-dal";
 import { TCertificateAuthorityDALFactory } from "@app/services/certificate-authority/certificate-authority-dal";
 import { TCertificateAuthoritySecretDALFactory } from "@app/services/certificate-authority/certificate-authority-secret-dal";
@@ -167,6 +168,29 @@ export const certManagerExportServiceFactory = ({
       );
       const sourceInternalCAs = sourceCAsRaw.filter((ca) => Boolean(ca.internalCa?.id));
 
+      const allSourceSecrets = sourceInternalCAs.length
+        ? await certificateAuthoritySecretDAL.find({ $in: { caId: sourceInternalCAs.map((ca) => ca.id) } }, { tx })
+        : [];
+      const sourceSecretsByCaId = new Map<string, typeof allSourceSecrets>();
+      for (const secret of allSourceSecrets) {
+        const existing = sourceSecretsByCaId.get(secret.caId);
+        if (existing) existing.push(secret);
+        else sourceSecretsByCaId.set(secret.caId, [secret]);
+      }
+
+      const externallyKeyedCaIds = new Set(
+        allSourceSecrets.filter((s) => isExternalCaKeySource(s.keySource)).map((s) => s.caId)
+      );
+      if (externallyKeyedCaIds.size) {
+        const names = sourceInternalCAs
+          .filter((ca) => externallyKeyedCaIds.has(ca.id))
+          .map((ca) => ca.name)
+          .join(", ");
+        throw new BadRequestError({
+          message: `Cannot export certificate authorities whose signing keys are held in an HSM or AWS KMS (${names}). Their keys are reached through a connection that is not exported, so they cannot be recreated in the destination. Delete these certificate authorities, then export again.`
+        });
+      }
+
       const caIndexById = new Map(sourceInternalCAs.map((ca) => [ca.id, ca]));
       const visited = new Set<string>();
       const sortedCAs: typeof sourceInternalCAs = [];
@@ -205,12 +229,15 @@ export const certManagerExportServiceFactory = ({
         );
         caIdMap.set(sourceCa.id, newCa.id);
 
-        const sourceSecrets = await certificateAuthoritySecretDAL.find({ caId: sourceCa.id }, { tx });
+        const sourceSecrets = sourceSecretsByCaId.get(sourceCa.id) ?? [];
         for (const sourceSecret of sourceSecrets) {
           const newSecret = await certificateAuthoritySecretDAL.create(
             {
               caId: newCa.id,
-              encryptedPrivateKey: await reencrypt(sourceSecret.encryptedPrivateKey)
+              keySource: sourceSecret.keySource,
+              encryptedPrivateKey: sourceSecret.encryptedPrivateKey
+                ? await reencrypt(sourceSecret.encryptedPrivateKey)
+                : undefined
             },
             tx
           );
@@ -307,6 +334,7 @@ export const certManagerExportServiceFactory = ({
             sans: toJsonbValue(sourcePolicy.sans),
             keyUsages: toJsonbValue(sourcePolicy.keyUsages),
             extendedKeyUsages: toJsonbValue(sourcePolicy.extendedKeyUsages),
+            customExtensions: toJsonbValue(sourcePolicy.customExtensions),
             algorithms: toJsonbValue(sourcePolicy.algorithms),
             validity: toJsonbValue(sourcePolicy.validity),
             basicConstraints: toJsonbValue(sourcePolicy.basicConstraints)

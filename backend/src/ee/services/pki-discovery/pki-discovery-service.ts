@@ -1,19 +1,36 @@
 import { ForbiddenError } from "@casl/ability";
+import pLimit from "p-limit";
+import { z } from "zod";
 
 import { ActionProjectType, OrganizationActionScope } from "@app/db/schemas";
 import { TGatewayPoolDALFactory } from "@app/ee/services/gateway-pool/gateway-pool-dal";
+import { assertIndividualGatewayAllowed } from "@app/ee/services/gateway-pool/gateway-pool-policy-fns";
 import { TGatewayPoolServiceFactory } from "@app/ee/services/gateway-pool/gateway-pool-service";
+import { TLicenseServiceFactory } from "@app/ee/services/license/license-service";
 import { OrgPermissionGatewayActions, OrgPermissionSubjects } from "@app/ee/services/permission/org-permission";
 import { TPermissionServiceFactory } from "@app/ee/services/permission/permission-service-types";
 import {
   ProjectPermissionPkiDiscoveryActions,
   ProjectPermissionSub
 } from "@app/ee/services/permission/project-permission";
+import { getConfig } from "@app/lib/config/env";
 import { BadRequestError, DatabaseError, ForbiddenRequestError, NotFoundError } from "@app/lib/errors";
+import { OrgServiceActor } from "@app/lib/types";
+import { TAppConnectionDALFactory } from "@app/services/app-connection/app-connection-dal";
+import { AppConnection } from "@app/services/app-connection/app-connection-enums";
+import { TAppConnectionServiceFactory } from "@app/services/app-connection/app-connection-service";
+import { TOrgDALFactory } from "@app/services/org/org-dal";
 
 import { TGatewayV2DALFactory } from "../gateway-v2/gateway-v2-dal";
 import { TPkiDiscoveryConfigDALFactory } from "./pki-discovery-config-dal";
+import { validateTargetConfig } from "./pki-discovery-fns";
+import { sshConnectionWithoutGatewayMessage } from "./pki-discovery-host-fns";
 import { TPkiDiscoveryScanHistoryDALFactory } from "./pki-discovery-scan-history-dal";
+import {
+  formatTargetConfigIssue,
+  LinuxServerTargetConfigSchema,
+  NetworkTargetConfigSchema
+} from "./pki-discovery-schemas";
 import {
   PkiDiscoveryScanStatus,
   PkiDiscoveryType,
@@ -22,14 +39,17 @@ import {
   TGetLatestScanDTO,
   TGetPkiDiscoveryDTO,
   TGetScanHistoryDTO,
+  TLinuxServerTargetConfig,
   TListPkiDiscoveriesDTO,
+  TNetworkTargetConfig,
   TPkiDiscoveryTargetConfig,
   TTriggerPkiDiscoveryScanDTO,
   TUpdatePkiDiscoveryDTO
 } from "./pki-discovery-types";
 
-const MAX_DISCOVERIES_PER_PROJECT = 10;
+const MAX_CLOUD_DISCOVERIES = 10;
 const SCAN_RATE_LIMIT_HOURS = 24;
+const CONNECTION_VALIDATION_CONCURRENCY = 5;
 
 type TPkiDiscoveryServiceFactoryDep = {
   pkiDiscoveryConfigDAL: Pick<
@@ -48,37 +68,108 @@ type TPkiDiscoveryServiceFactoryDep = {
     "findLatestByDiscoveryId" | "findByDiscoveryId" | "countByDiscoveryId"
   >;
   permissionService: Pick<TPermissionServiceFactory, "getProjectPermission" | "getOrgPermission">;
+  licenseService: Pick<TLicenseServiceFactory, "getPlan">;
   gatewayV2DAL: Pick<TGatewayV2DALFactory, "findOne">;
   gatewayPoolDAL: Pick<TGatewayPoolDALFactory, "findById">;
   gatewayPoolService: Pick<TGatewayPoolServiceFactory, "resolveAttachableGatewayFromPool">;
+  orgDAL: Pick<TOrgDALFactory, "findById">;
+  appConnectionService: Pick<TAppConnectionServiceFactory, "validateAppConnectionUsageById">;
+  appConnectionDAL: Pick<TAppConnectionDALFactory, "find">;
   queuePkiDiscoveryScan: (discoveryId: string) => Promise<void>;
 };
 
 export type TPkiDiscoveryServiceFactory = ReturnType<typeof pkiDiscoveryServiceFactory>;
 
-const validateTargetConfigForType = (discoveryType: PkiDiscoveryType, config: TPkiDiscoveryTargetConfig) => {
-  switch (discoveryType) {
-    case PkiDiscoveryType.Network:
-      if (!config.ipRanges?.length && !config.domains?.length) {
-        throw new BadRequestError({
-          message: "Target configuration must include at least one IP range or domain"
-        });
-      }
-      break;
-    default:
-      throw new BadRequestError({ message: `Unsupported discovery type: ${discoveryType as string}` });
-  }
-};
-
 export const pkiDiscoveryServiceFactory = ({
   pkiDiscoveryConfigDAL,
   pkiDiscoveryScanHistoryDAL,
   permissionService,
+  licenseService,
   gatewayV2DAL,
   gatewayPoolDAL,
   gatewayPoolService,
+  orgDAL,
+  appConnectionService,
+  appConnectionDAL,
   queuePkiDiscoveryScan
 }: TPkiDiscoveryServiceFactoryDep) => {
+  const $parseTargetConfig = <T>(schema: z.ZodTypeAny, targetConfig: TPkiDiscoveryTargetConfig): T => {
+    const parsed = schema.safeParse(targetConfig);
+    if (!parsed.success) {
+      throw new BadRequestError({ message: parsed.error.issues.slice(0, 3).map(formatTargetConfigIssue).join("; ") });
+    }
+    return parsed.data as T;
+  };
+
+  const $validateNetworkTarget = (targetConfig: TPkiDiscoveryTargetConfig, hasGateway: boolean) => {
+    const config = $parseTargetConfig<TNetworkTargetConfig>(NetworkTargetConfigSchema, targetConfig);
+    const validation = validateTargetConfig(config.ipRanges, config.ports, config.domains, hasGateway);
+    if (!validation.valid) {
+      throw new BadRequestError({ message: validation.error || "Invalid target configuration" });
+    }
+    return config;
+  };
+
+  const $validateLinuxServerTarget = async (
+    targetConfig: TPkiDiscoveryTargetConfig,
+    projectId: string,
+    actor: OrgServiceActor,
+    existingConnectionIds?: string[]
+  ): Promise<TLinuxServerTargetConfig> => {
+    const config = $parseTargetConfig<TLinuxServerTargetConfig>(LinuxServerTargetConfigSchema, targetConfig);
+    const alreadyValidated = new Set(existingConnectionIds);
+    const newConnectionIds = config.connectionIds.filter((connectionId) => !alreadyValidated.has(connectionId));
+    const limit = pLimit(CONNECTION_VALIDATION_CONCURRENCY);
+    const connections = await Promise.all(
+      newConnectionIds.map((connectionId) =>
+        limit(() =>
+          appConnectionService.validateAppConnectionUsageById(AppConnection.SSH, { connectionId, projectId }, actor)
+        )
+      )
+    );
+    const connectionWithoutGateway = connections.find(
+      (connection) => !connection.gatewayId && !connection.gatewayPoolId
+    );
+    if (connectionWithoutGateway) {
+      throw new BadRequestError({ message: sshConnectionWithoutGatewayMessage(connectionWithoutGateway.name) });
+    }
+    return config;
+  };
+
+  const $assertJobGatewayAllowed = (discoveryType: PkiDiscoveryType, hasJobGateway: boolean) => {
+    if (discoveryType !== PkiDiscoveryType.Network && hasJobGateway) {
+      throw new BadRequestError({
+        message:
+          "Linux Server discovery uses the gateway of each SSH connection, so a gateway or gateway pool cannot be set on the job"
+      });
+    }
+  };
+
+  const $validateTarget = async ({
+    discoveryType,
+    targetConfig,
+    hasGateway,
+    projectId,
+    actor,
+    existingConnectionIds
+  }: {
+    discoveryType: PkiDiscoveryType;
+    targetConfig: TPkiDiscoveryTargetConfig;
+    hasGateway: boolean;
+    projectId: string;
+    actor: OrgServiceActor;
+    existingConnectionIds?: string[];
+  }): Promise<TPkiDiscoveryTargetConfig> => {
+    switch (discoveryType) {
+      case PkiDiscoveryType.Network:
+        return $validateNetworkTarget(targetConfig, hasGateway);
+      case PkiDiscoveryType.LinuxServer:
+        return $validateLinuxServerTarget(targetConfig, projectId, actor, existingConnectionIds);
+      default:
+        throw new BadRequestError({ message: `Unsupported discovery type: ${discoveryType as string}` });
+    }
+  };
+
   const createDiscovery = async ({
     projectId,
     name,
@@ -89,6 +180,7 @@ export const pkiDiscoveryServiceFactory = ({
     scanIntervalDays,
     gatewayId,
     gatewayPoolId,
+    orgActor,
     actor,
     actorId,
     actorAuthMethod,
@@ -112,14 +204,33 @@ export const pkiDiscoveryServiceFactory = ({
       ProjectPermissionSub.PkiDiscovery
     );
 
-    const existingCount = await pkiDiscoveryConfigDAL.countByProjectId(projectId);
-    if (existingCount >= MAX_DISCOVERIES_PER_PROJECT) {
+    // Creation only; existing discoveries keep scanning and stay editable.
+    const plan = await licenseService.getPlan(actorOrgId);
+    if (!plan.pkiDiscovery) {
       throw new BadRequestError({
-        message: `Maximum number of discovery configurations (${MAX_DISCOVERIES_PER_PROJECT}) reached for this project`
+        message:
+          "Failed to create certificate discovery due to plan restriction. Upgrade plan to use certificate discovery."
       });
     }
 
-    validateTargetConfigForType(discoveryType, targetConfig);
+    const appCfg = getConfig();
+    if (appCfg.isCloud) {
+      const existingCount = await pkiDiscoveryConfigDAL.countByProjectId(projectId);
+      if (existingCount >= MAX_CLOUD_DISCOVERIES) {
+        throw new BadRequestError({
+          message: `Maximum number of discovery configurations (${MAX_CLOUD_DISCOVERIES}) reached`
+        });
+      }
+    }
+
+    $assertJobGatewayAllowed(discoveryType, Boolean(gatewayId || gatewayPoolId));
+    const validatedTargetConfig = await $validateTarget({
+      discoveryType,
+      targetConfig,
+      hasGateway: Boolean(gatewayId || gatewayPoolId),
+      projectId,
+      actor: orgActor
+    });
 
     if (gatewayId) {
       const gateway = await gatewayV2DAL.findOne({ id: gatewayId, orgId: actorOrgId });
@@ -140,6 +251,8 @@ export const pkiDiscoveryServiceFactory = ({
         OrgPermissionGatewayActions.AttachGateways,
         OrgPermissionSubjects.Gateway
       );
+
+      await assertIndividualGatewayAllowed({ orgDAL, orgId: actorOrgId, gatewayId });
     } else if (gatewayPoolId) {
       await gatewayPoolService.resolveAttachableGatewayFromPool({
         poolId: gatewayPoolId,
@@ -154,7 +267,7 @@ export const pkiDiscoveryServiceFactory = ({
         name,
         description,
         discoveryType,
-        targetConfig,
+        targetConfig: validatedTargetConfig,
         isAutoScanEnabled: isAutoScanEnabled ?? false,
         scanIntervalDays: isAutoScanEnabled ? scanIntervalDays : null,
         gatewayId: gatewayPoolId ? null : gatewayId,
@@ -184,6 +297,7 @@ export const pkiDiscoveryServiceFactory = ({
     gatewayId,
     gatewayPoolId,
     isActive,
+    orgActor,
     actor,
     actorId,
     actorAuthMethod,
@@ -212,12 +326,29 @@ export const pkiDiscoveryServiceFactory = ({
       ProjectPermissionSub.PkiDiscovery
     );
 
-    if (targetConfig) {
-      validateTargetConfigForType(
-        (discovery.discoveryType as PkiDiscoveryType) || PkiDiscoveryType.Network,
-        targetConfig
-      );
-    }
+    const discoveryType = (discovery.discoveryType as PkiDiscoveryType) || PkiDiscoveryType.Network;
+    const effectiveHasGateway =
+      gatewayId !== undefined || gatewayPoolId !== undefined
+        ? Boolean(gatewayId || gatewayPoolId)
+        : Boolean(discovery.gatewayId || discovery.gatewayPoolId);
+
+    $assertJobGatewayAllowed(discoveryType, Boolean(gatewayId || gatewayPoolId));
+
+    const existingConnectionIds =
+      discoveryType === PkiDiscoveryType.LinuxServer
+        ? (discovery.targetConfig as TLinuxServerTargetConfig).connectionIds
+        : undefined;
+
+    const validatedTargetConfig = targetConfig
+      ? await $validateTarget({
+          discoveryType,
+          targetConfig,
+          hasGateway: effectiveHasGateway,
+          projectId: discovery.projectId,
+          actor: orgActor,
+          existingConnectionIds
+        })
+      : undefined;
 
     if (gatewayId) {
       const gateway = await gatewayV2DAL.findOne({ id: gatewayId, orgId: actorOrgId });
@@ -238,6 +369,13 @@ export const pkiDiscoveryServiceFactory = ({
         OrgPermissionGatewayActions.AttachGateways,
         OrgPermissionSubjects.Gateway
       );
+
+      await assertIndividualGatewayAllowed({
+        orgDAL,
+        orgId: actorOrgId,
+        gatewayId,
+        previousGatewayId: discovery.gatewayId
+      });
     } else if (gatewayPoolId && gatewayPoolId !== discovery.gatewayPoolId) {
       await gatewayPoolService.resolveAttachableGatewayFromPool({
         poolId: gatewayPoolId,
@@ -253,7 +391,7 @@ export const pkiDiscoveryServiceFactory = ({
       const updatedDiscovery = await pkiDiscoveryConfigDAL.updateById(discoveryId, {
         name,
         description,
-        targetConfig,
+        targetConfig: validatedTargetConfig,
         isAutoScanEnabled,
         scanIntervalDays: isAutoScanEnabled ? scanIntervalDays : null,
         gatewayId: gatewayIdValue,
@@ -304,6 +442,28 @@ export const pkiDiscoveryServiceFactory = ({
     return discovery;
   };
 
+  const $attachConnections = async <T extends { discoveryType: string; targetConfig?: unknown }>(
+    discoveries: T[],
+    orgId: string
+  ) => {
+    const connectionIdsOf = (discovery: T) =>
+      discovery.discoveryType === PkiDiscoveryType.LinuxServer
+        ? (discovery.targetConfig as TLinuxServerTargetConfig).connectionIds
+        : [];
+    const connectionIds = [...new Set(discoveries.flatMap(connectionIdsOf))];
+    const rows = connectionIds.length ? await appConnectionDAL.find({ $in: { id: connectionIds }, orgId }) : [];
+    const connectionsById = new Map(
+      rows.map((row) => [row.id, { id: row.id, name: row.name, app: row.app as AppConnection }])
+    );
+    return discoveries.map((discovery) => ({
+      ...discovery,
+      connections: connectionIdsOf(discovery).flatMap((id) => {
+        const connection = connectionsById.get(id);
+        return connection ? [connection] : [];
+      })
+    }));
+  };
+
   const getDiscovery = async ({ discoveryId, actor, actorId, actorAuthMethod, actorOrgId }: TGetPkiDiscoveryDTO) => {
     const discovery = await pkiDiscoveryConfigDAL.findByIdWithInstallationCounts(discoveryId);
     if (!discovery) {
@@ -338,7 +498,9 @@ export const pkiDiscoveryServiceFactory = ({
       }
     }
 
-    return { ...discovery, gatewayName, gatewayPoolName };
+    const [discoveryWithConnections] = await $attachConnections([discovery], actorOrgId);
+
+    return { ...discoveryWithConnections, gatewayName, gatewayPoolName };
   };
 
   const listDiscoveries = async ({
@@ -368,7 +530,7 @@ export const pkiDiscoveryServiceFactory = ({
     const discoveries = await pkiDiscoveryConfigDAL.findByProjectId(projectId, { offset, limit, search });
     const totalCount = await pkiDiscoveryConfigDAL.countByProjectId(projectId, { search });
 
-    return { discoveries, totalCount };
+    return { discoveries: await $attachConnections(discoveries, actorOrgId), totalCount };
   };
 
   const triggerScan = async ({

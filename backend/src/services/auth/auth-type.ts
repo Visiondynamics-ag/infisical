@@ -8,6 +8,7 @@ export enum AuthMethod {
   JUMPCLOUD_SAML = "jumpcloud-saml",
   GOOGLE_SAML = "google-saml",
   KEYCLOAK_SAML = "keycloak-saml",
+  AUTH0_SAML = "auth0-saml",
   LDAP = "ldap",
   OIDC = "oidc"
 }
@@ -25,6 +26,7 @@ export enum AuthTokenType {
   GATEWAY_ACCESS_TOKEN = "gatewayAccessToken",
   RELAY_ACCESS_TOKEN = "relayAccessToken",
   KMIP_SERVER_ACCESS_TOKEN = "kmipServerAccessToken",
+  AGENT_VAULT_PROXY_ACCESS_TOKEN = "agentVaultProxyAccessToken",
   ACCOUNT_RECOVERY_TOKEN = "accountRecoveryToken"
 }
 
@@ -42,13 +44,13 @@ export enum AuthMode {
   API_KEY = "apiKey",
   IDENTITY_ACCESS_TOKEN = "identityAccessToken",
   SCIM_TOKEN = "scimToken",
-  MCP_JWT = "mcpJwt",
   // Delegated OAuth 2.0 access tokens issued via the authorization code flow. These are NOT
   // first-party dashboard sessions: a route must explicitly opt into AuthMode.OAUTH to accept them.
   OAUTH = "oauth",
   GATEWAY_ACCESS_TOKEN = "gatewayAccessToken",
   RELAY_ACCESS_TOKEN = "relayAccessToken",
-  KMIP_SERVER_ACCESS_TOKEN = "kmipServerAccessToken"
+  KMIP_SERVER_ACCESS_TOKEN = "kmipServerAccessToken",
+  AGENT_VAULT_PROXY_ACCESS_TOKEN = "agentVaultProxyAccessToken"
 }
 
 export enum ActorType { // would extend to AWS, Azure, ...
@@ -65,7 +67,8 @@ export enum ActorType { // would extend to AWS, Azure, ...
   UNKNOWN_USER = "unknownUser",
   GATEWAY = "gateway",
   RELAY = "relay",
-  KMIP_SERVER = "kmipServer"
+  KMIP_SERVER = "kmipServer",
+  AGENT_VAULT_PROXY = "agentVaultProxy"
 }
 
 export type TGatewayAccessTokenJwtPayload = {
@@ -89,6 +92,13 @@ export type TKmipServerAccessTokenJwtPayload = {
   tokenVersion: number;
 };
 
+export type TAgentVaultProxyAccessTokenJwtPayload = {
+  authTokenType: AuthTokenType.AGENT_VAULT_PROXY_ACCESS_TOKEN;
+  agentVaultProxyId: string;
+  orgId: string;
+  tokenVersion: number;
+};
+
 // This will be null unless the token-type is JWT
 export type ActorAuthMethod = AuthMethod | null;
 
@@ -102,15 +112,15 @@ export type AuthModeJwtTokenPayload = {
   subOrganizationId?: string;
   isMfaVerified?: boolean;
   mfaMethod?: MfaMethod;
-  mcp?: {
-    endpointId: string;
-  };
   // Present only on delegated OAuth 2.0 access tokens. Its presence marks the token as
   // AuthMode.OAUTH so the default JWT middleware will not accept it as a first-party session.
   oauthClientId?: string;
   // Granted OAuth delegation scopes (see OauthScope). The delegated ability is intersected with
   // these in permission-service; an empty/absent list denies all scope-guarded resource access.
   scopes?: string[];
+  // Set instead of `scopes` on RFC 8693 token exchange tokens, which carry the user's authorization
+  // unnarrowed. Never both. See OauthDelegationMode.
+  delegation?: string;
 };
 
 export type AuthModeMfaJwtTokenPayload = {

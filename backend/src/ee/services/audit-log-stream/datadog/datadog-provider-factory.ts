@@ -1,9 +1,8 @@
 import { RawAxiosRequestHeaders } from "axios";
 
 import { getConfig } from "@app/lib/config/env";
-import { request } from "@app/lib/config/request";
 import { BadRequestError } from "@app/lib/errors";
-import { blockLocalAndPrivateIpAddresses } from "@app/lib/validator";
+import { safeRequest } from "@app/lib/validator";
 
 import { AUDIT_LOG_STREAM_BATCH_TIMEOUT, AUDIT_LOG_STREAM_TIMEOUT } from "../../audit-log/audit-log-queue";
 import {
@@ -33,14 +32,13 @@ export const DatadogProviderFactory = () => {
   }) => {
     const { url, token } = credentials;
 
-    await blockLocalAndPrivateIpAddresses(url);
-
     const streamHeaders: RawAxiosRequestHeaders = { "Content-Type": "application/json", "DD-API-KEY": token };
 
-    await request
+    await safeRequest
       .post(url, createPayload({ ping: "ok" }), {
         headers: streamHeaders,
-        timeout: AUDIT_LOG_STREAM_TIMEOUT
+        timeout: AUDIT_LOG_STREAM_TIMEOUT,
+        allowPrivateIps: getConfig().AUDIT_LOG_STREAM_ALLOW_INTERNAL_IP
       })
       .catch((err) => {
         throw new BadRequestError({ message: `Failed to connect with Datadog: ${(err as Error)?.message}` });
@@ -57,13 +55,12 @@ export const DatadogProviderFactory = () => {
 
     const { url, token } = credentials;
 
-    await blockLocalAndPrivateIpAddresses(url);
-
     const streamHeaders: RawAxiosRequestHeaders = { "Content-Type": "application/json", "DD-API-KEY": token };
 
-    await request.post(url, auditLogs.map(createPayload), {
+    await safeRequest.post(url, auditLogs.map(createPayload), {
       headers: streamHeaders,
-      timeout: AUDIT_LOG_STREAM_BATCH_TIMEOUT
+      timeout: AUDIT_LOG_STREAM_BATCH_TIMEOUT,
+      allowPrivateIps: getConfig().AUDIT_LOG_STREAM_ALLOW_INTERNAL_IP
     });
   };
 

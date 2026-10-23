@@ -1,16 +1,15 @@
 /* eslint-disable no-await-in-loop, no-continue */
-import * as x509 from "@peculiar/x509";
-
+import { TGatewayPoolServiceFactory } from "@app/ee/services/gateway-pool/gateway-pool-service";
+import { TGatewayV2ServiceFactory } from "@app/ee/services/gateway-v2/gateway-v2-service";
 import { KeyStorePrefixes, TKeyStoreFactory } from "@app/keystore/keystore";
 import { getConfig } from "@app/lib/config/env";
 import { CronJobName, TCronJobFactory } from "@app/lib/cron/cron-job";
-import { crypto } from "@app/lib/crypto/cryptography";
-import { getPqcCrypto, isPqcAlgorithm } from "@app/lib/crypto/pqc";
 import { BadRequestError } from "@app/lib/errors";
 import { logger } from "@app/lib/logger";
 import { QueueJobs, QueueName, TQueueServiceFactory } from "@app/queue";
 import { TCertificateDALFactory } from "@app/services/certificate/certificate-dal";
-import { CertKeyAlgorithm, CertStatus } from "@app/services/certificate/certificate-types";
+import { CertStatus } from "@app/services/certificate/certificate-types";
+import type { TCaKeySourceServiceFactory } from "@app/services/certificate-authority/ca-key-source/ca-key-source-service";
 import { DEFAULT_CRL_VALIDITY_DAYS } from "@app/services/certificate-common/certificate-constants";
 import { TKmsServiceFactory } from "@app/services/kms/kms-service";
 import { TProjectDALFactory } from "@app/services/project/project-dal";
@@ -29,7 +28,7 @@ import { AcmeCertificateAuthorityFns } from "./acme/acme-certificate-authority-f
 import { AzureAdCsCertificateAuthorityFns } from "./azure-ad-cs/azure-ad-cs-certificate-authority-fns";
 import { TCertificateAuthorityDALFactory } from "./certificate-authority-dal";
 import { CaType } from "./certificate-authority-enums";
-import { keyAlgorithmToAlgCfg } from "./certificate-authority-fns";
+import { getCaSigner } from "./certificate-authority-fns";
 import { TCertificateAuthoritySecretDALFactory } from "./certificate-authority-secret-dal";
 import { TExternalCertificateAuthorityDALFactory } from "./external-certificate-authority-dal";
 import { TInternalCertificateAuthorityDALFactory } from "./internal/internal-certificate-authority-dal";
@@ -57,6 +56,9 @@ type TCertificateAuthorityQueueFactoryDep = {
   pkiSyncDAL: Pick<TPkiSyncDALFactory, "find">;
   pkiSyncQueue: Pick<TPkiSyncQueueFactory, "queuePkiSyncSyncCertificatesById">;
   internalCertificateAuthorityDAL: Pick<TInternalCertificateAuthorityDALFactory, "find">;
+  caKeySourceService: Pick<TCaKeySourceServiceFactory, "buildSigner">;
+  gatewayV2Service: Pick<TGatewayV2ServiceFactory, "getPlatformConnectionDetailsByGatewayId">;
+  gatewayPoolService: Pick<TGatewayPoolServiceFactory, "resolveEffectiveGatewayId">;
 };
 
 export type TCertificateAuthorityQueueFactory = ReturnType<typeof certificateAuthorityQueueFactory>;
@@ -79,7 +81,10 @@ export const certificateAuthorityQueueFactory = ({
   pkiSubscriberDAL,
   pkiSyncDAL,
   pkiSyncQueue,
-  internalCertificateAuthorityDAL
+  internalCertificateAuthorityDAL,
+  caKeySourceService,
+  gatewayV2Service,
+  gatewayPoolService
 }: TCertificateAuthorityQueueFactoryDep) => {
   const acmeFns = AcmeCertificateAuthorityFns({
     appConnectionDAL,
@@ -93,7 +98,10 @@ export const certificateAuthorityQueueFactory = ({
     pkiSubscriberDAL,
     projectDAL,
     pkiSyncDAL,
-    pkiSyncQueue
+    pkiSyncQueue,
+    gatewayV2Service,
+    gatewayPoolService,
+    keyStore
   });
 
   const azureAdCsFns = AzureAdCsCertificateAuthorityFns({
@@ -151,9 +159,6 @@ export const certificateAuthorityQueueFactory = ({
               crlExpiresAt.setDate(crlExpiresAt.getDate() + DEFAULT_CRL_VALIDITY_DAYS);
               if (crlExpiresAt > nextRunAt) continue;
 
-              const caSecret = await certificateAuthoritySecretDAL.findOne({ caId: internalCa.caId });
-              const alg = keyAlgorithmToAlgCfg(internalCa.keyAlgorithm as CertKeyAlgorithm);
-
               const ca = await certificateAuthorityDAL.findById(internalCa.caId);
 
               const keyId = await getProjectKmsCertificateKeyId({
@@ -162,22 +167,14 @@ export const certificateAuthorityQueueFactory = ({
                 kmsService
               });
 
-              const kmsDecryptor = await kmsService.decryptWithKmsKey({ kmsId: keyId });
-              const privateKey = await kmsDecryptor({ cipherTextBlob: caSecret.encryptedPrivateKey });
-
-              let sk: CryptoKey;
-              if (isPqcAlgorithm(internalCa.keyAlgorithm)) {
-                sk = await getPqcCrypto().subtle.importKey("pkcs8", privateKey, alg, true, ["sign"]);
-              } else {
-                const skObj = crypto.nativeCrypto.createPrivateKey({ key: privateKey, format: "der", type: "pkcs8" });
-                sk = await crypto.nativeCrypto.subtle.importKey(
-                  "pkcs8",
-                  skObj.export({ format: "der", type: "pkcs8" }),
-                  alg,
-                  true,
-                  ["sign"]
-                );
-              }
+              const { signer } = await getCaSigner({
+                caId: internalCa.caId,
+                certificateAuthorityDAL,
+                certificateAuthoritySecretDAL,
+                projectDAL,
+                kmsService,
+                caKeySourceService
+              });
 
               const revokedCerts = await certificateDAL.find({
                 caId: internalCa.caId,
@@ -188,7 +185,7 @@ export const certificateAuthorityQueueFactory = ({
               const nextUpdate = new Date(thisUpdate);
               nextUpdate.setDate(nextUpdate.getDate() + DEFAULT_CRL_VALIDITY_DAYS);
 
-              const crl = await x509.X509CrlGenerator.create({
+              const crl = await signer.createCrl({
                 issuer: internalCa.dn,
                 thisUpdate,
                 nextUpdate,
@@ -196,9 +193,7 @@ export const certificateAuthorityQueueFactory = ({
                   serialNumber: revokedCert.serialNumber,
                   revocationDate: new Date(revokedCert.revokedAt as Date),
                   reason: revokedCert.revocationReason as number
-                })),
-                signingAlgorithm: alg,
-                signingKey: sk
+                }))
               });
 
               const kmsEncryptor = await kmsService.encryptWithKmsKey({ kmsId: keyId });

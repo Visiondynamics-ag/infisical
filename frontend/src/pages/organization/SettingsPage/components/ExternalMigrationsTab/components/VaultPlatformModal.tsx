@@ -30,6 +30,7 @@ import {
   OrgGatewayPermissionActions,
   OrgPermissionSubjects
 } from "@app/context/OrgPermissionContext/types";
+import { useScopeVariant } from "@app/hooks";
 import { gatewaysQueryKeys } from "@app/hooks/api";
 import { useHasCustomMigrationAvailable } from "@app/hooks/api/migration";
 import { useImportVault } from "@app/hooks/api/migration/mutations";
@@ -156,6 +157,7 @@ const MAPPING_TYPE_MENU_ITEMS = [
 ];
 
 export const VaultPlatformModal = ({ onClose }: Props) => {
+  const scopeVariant = useScopeVariant();
   const { data: isCustomMigrationAvailable } = useHasCustomMigrationAvailable(
     ExternalMigrationProviders.Vault
   );
@@ -314,7 +316,7 @@ export const VaultPlatformModal = ({ onClose }: Props) => {
                       className={twMerge(
                         "flex w-full cursor-pointer flex-col items-center gap-2 rounded-sm border border-border bg-container/50 p-4 opacity-75 transition-all",
                         field.value === el.value
-                          ? "border-project/50 bg-container opacity-100"
+                          ? "border-org/50 bg-container opacity-100"
                           : "hover:border-accent/30 hover:bg-foreground/5",
                         el.isCustom && "col-span-2",
                         el.isCustom &&
@@ -364,7 +366,7 @@ export const VaultPlatformModal = ({ onClose }: Props) => {
         <div className="flex items-center gap-2 pt-2">
           <Button
             type="submit"
-            variant="project"
+            variant={scopeVariant}
             isPending={isLoading || isSubmitting}
             isDisabled={!isDirty || isSubmitting || isLoading || !isValid}
           >

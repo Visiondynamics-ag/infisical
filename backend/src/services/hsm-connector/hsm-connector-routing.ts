@@ -1,9 +1,14 @@
 import { TGatewayPoolServiceFactory } from "@app/ee/services/gateway-pool/gateway-pool-service";
 import { TGatewayV2ServiceFactory } from "@app/ee/services/gateway-v2/gateway-v2-service";
 import { BadRequestError, NotFoundError } from "@app/lib/errors";
-import { GatewayProxyProtocol } from "@app/lib/gateway/types";
 import { withGatewayV2Proxy } from "@app/lib/gateway-v2/gateway-v2";
-import { callPkcs11Endpoint, isRetryablePkcs11RpcError, Pkcs11RpcEndpoint } from "@app/lib/gateway-v2/pkcs11-rpc";
+import {
+  callPkcs11Endpoint,
+  isRetryablePkcs11RpcError,
+  Pkcs11ErrorCode,
+  Pkcs11RpcEndpoint
+} from "@app/lib/gateway-v2/pkcs11-rpc";
+import { GatewayProxyProtocol } from "@app/lib/gateway-v2/types";
 import { logger } from "@app/lib/logger";
 
 import {
@@ -15,6 +20,8 @@ import {
 const PKCS11_POOL_RETRY_LIMIT = 2;
 const TEST_FANOUT_MAX = 10;
 const PKCS11_TARGET_HOST = "pkcs11";
+const NO_CAPABLE_MEMBER_MESSAGE =
+  "No HSM-capable gateway available in the pool. Ensure at least one gateway in the pool has HSM support enabled.";
 
 type TGatewayRouting = {
   gatewayId: string | null | undefined;
@@ -23,7 +30,7 @@ type TGatewayRouting = {
 
 type THsmConnectorRoutingDeps = {
   gatewayV2Service: Pick<TGatewayV2ServiceFactory, "getPlatformConnectionDetailsByGatewayId">;
-  gatewayPoolService: Pick<TGatewayPoolServiceFactory, "listHealthyGateways">;
+  gatewayPoolService: Pick<TGatewayPoolServiceFactory, "listHealthyGateways" | "selectGatewayFromPool">;
 };
 
 const isPkcs11Capable = (capabilities: unknown): boolean => {
@@ -45,15 +52,16 @@ export const hsmConnectorRoutingFactory = ({ gatewayV2Service, gatewayPoolServic
     if (!connector.gatewayPoolId) {
       throw new BadRequestError({ message: "Connector has neither gatewayId nor gatewayPoolId set." });
     }
-    const healthy = await gatewayPoolService.listHealthyGateways(connector.gatewayPoolId);
-    const capable = healthy.filter((g) => isPkcs11Capable(g.capabilities) && !triedGatewayIds.has(g.id));
-    if (capable.length === 0) {
-      throw new BadRequestError({
-        message:
-          "No HSM-capable gateway available in the pool. Ensure at least one gateway in the pool has HSM support enabled."
-      });
-    }
-    return capable[Math.floor(Math.random() * capable.length)].id;
+
+    // Key material is not portable between HSMs, so a member without the module attached is not an
+    // acceptable substitute no matter how idle it is.
+    const selected = await gatewayPoolService.selectGatewayFromPool({
+      poolId: connector.gatewayPoolId,
+      exclude: triedGatewayIds,
+      filter: (gateway) => isPkcs11Capable(gateway.capabilities),
+      unavailableMessage: NO_CAPABLE_MEMBER_MESSAGE
+    });
+    return selected.id;
   };
 
   const dispatchPkcs11 = async <T>(args: {
@@ -70,7 +78,15 @@ export const hsmConnectorRoutingFactory = ({ gatewayV2Service, gatewayPoolServic
     // retryable, etc.). Parallelising would fire redundant PKCS#11 calls.
     /* eslint-disable no-await-in-loop */
     for (let attempt = 0; attempt <= PKCS11_POOL_RETRY_LIMIT; attempt += 1) {
-      const gatewayId = await pickGateway(args.connector, triedGatewayIds);
+      let gatewayId;
+      try {
+        gatewayId = await pickGateway(args.connector, triedGatewayIds);
+      } catch (err) {
+        // Once every capable member has been tried, the accumulated PKCS#11 failure is the useful
+        // error. Reporting "no HSM-capable gateway" instead points operators at the wrong problem.
+        if (!lastError) throw err;
+        break;
+      }
       triedGatewayIds.add(gatewayId);
 
       const conn = await gatewayV2Service.getPlatformConnectionDetailsByGatewayId({
@@ -96,12 +112,7 @@ export const hsmConnectorRoutingFactory = ({ gatewayV2Service, gatewayPoolServic
                 params: args.params
               }
             }),
-          {
-            protocol: GatewayProxyProtocol.Pkcs11,
-            relayHost: conn.relayHost,
-            gateway: conn.gateway,
-            relay: conn.relay
-          }
+          { ...conn, protocol: GatewayProxyProtocol.Pkcs11 }
         );
         if (response.ok) return response.result;
         lastError = { code: response.errorCode, message: response.errorMessage };
@@ -120,7 +131,7 @@ export const hsmConnectorRoutingFactory = ({ gatewayV2Service, gatewayPoolServic
         );
       } catch (err) {
         lastError = {
-          code: "gateway_unreachable",
+          code: Pkcs11ErrorCode.GatewayUnreachable,
           message: err instanceof Error ? err.message : String(err)
         };
         if (!args.connector.gatewayPoolId) break;
@@ -147,7 +158,12 @@ export const hsmConnectorRoutingFactory = ({ gatewayV2Service, gatewayPoolServic
       targetPort: 0
     });
     if (!conn) {
-      return { gatewayId, ok: false, errorCode: "gateway_not_found", errorMessage: `Gateway ${gatewayId} not found.` };
+      return {
+        gatewayId,
+        ok: false,
+        errorCode: Pkcs11ErrorCode.GatewayNotFound,
+        errorMessage: `Gateway ${gatewayId} not found.`
+      };
     }
     try {
       const response = await withGatewayV2Proxy(
@@ -161,12 +177,7 @@ export const hsmConnectorRoutingFactory = ({ gatewayV2Service, gatewayPoolServic
               params: {}
             }
           }),
-        {
-          protocol: GatewayProxyProtocol.Pkcs11,
-          relayHost: conn.relayHost,
-          gateway: conn.gateway,
-          relay: conn.relay
-        }
+        { ...conn, protocol: GatewayProxyProtocol.Pkcs11 }
       );
       if (response.ok) {
         return { gatewayId, ok: true, slotInfo: response.result.slotInfo };
@@ -176,7 +187,7 @@ export const hsmConnectorRoutingFactory = ({ gatewayV2Service, gatewayPoolServic
       return {
         gatewayId,
         ok: false,
-        errorCode: "gateway_unreachable",
+        errorCode: Pkcs11ErrorCode.GatewayUnreachable,
         errorMessage: err instanceof Error ? err.message : String(err)
       };
     }
@@ -196,10 +207,7 @@ export const hsmConnectorRoutingFactory = ({ gatewayV2Service, gatewayPoolServic
         if (isPkcs11Capable(g.capabilities)) targets.push(g.id);
       }
       if (targets.length === 0) {
-        throw new BadRequestError({
-          message:
-            "No HSM-capable gateway available in the pool. Ensure at least one gateway in the pool has HSM support enabled."
-        });
+        throw new BadRequestError({ message: NO_CAPABLE_MEMBER_MESSAGE });
       }
     }
 

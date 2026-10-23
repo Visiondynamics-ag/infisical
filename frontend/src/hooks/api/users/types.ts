@@ -7,6 +7,7 @@ export const SAML_AUTH_METHODS = [
   "jumpcloud-saml",
   "keycloak-saml",
   "google-saml",
+  "auth0-saml",
   "saml"
 ] as const;
 
@@ -19,6 +20,7 @@ export enum AuthMethod {
   AZURE_SAML = "azure-saml",
   JUMPCLOUD_SAML = "jumpcloud-saml",
   KEYCLOAK_SAML = "keycloak-saml",
+  AUTH0_SAML = "auth0-saml",
   GOOGLE_SAML = "google-saml",
   LDAP = "ldap",
   OIDC = "oidc",
@@ -103,6 +105,7 @@ export type TWorkspaceUser = {
   id: string;
   user: {
     isOrgMembershipActive: boolean;
+    isOrgMembershipPending: boolean;
     email: string;
     username: string;
     firstName: string;
@@ -180,6 +183,11 @@ export type AddUserToOrgDTO = {
   inviteeEmails: string[];
   organizationRoleSlug: string;
   organizationId: string;
+  /** Signup-created projects the invitees get member access to. */
+  projectIds?: string[];
+  /** Also grant invitees member access to the org's PAM product. */
+  grantPamAccess?: boolean;
+  grantAgentVaultAccess?: boolean;
 };
 
 export type CreateAPIKeyRes = {

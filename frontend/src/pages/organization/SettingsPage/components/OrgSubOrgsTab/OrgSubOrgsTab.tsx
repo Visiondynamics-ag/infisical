@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { useLocation, useNavigate } from "@tanstack/react-router";
 import { format } from "date-fns";
 import {
   CheckIcon,
@@ -18,9 +18,9 @@ import { z } from "zod";
 
 import { Mfa } from "@app/components/auth/Mfa";
 import { createNotification } from "@app/components/notifications";
+import { NewSubOrganizationModal } from "@app/components/organization/NewSubOrganizationModal";
 import { OrgPermissionCan } from "@app/components/permissions";
 import SecurityClient from "@app/components/utilities/SecurityClient";
-import { DeleteActionModal, FormControl, Input, Modal, ModalContent } from "@app/components/v2";
 import {
   Badge,
   Button,
@@ -30,6 +30,14 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  ConfirmationAlertDialog,
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -38,7 +46,11 @@ import {
   EmptyDescription,
   EmptyHeader,
   EmptyTitle,
+  Field,
+  FieldError,
+  FieldLabel,
   IconButton,
+  Input,
   InputGroup,
   InputGroupAddon,
   InputGroupInput,
@@ -71,7 +83,6 @@ import {
   useUpdateSubOrganization
 } from "@app/hooks/api/subOrganizations";
 import { usePopUp } from "@app/hooks/usePopUp";
-import { NewSubOrganizationForm } from "@app/layouts/OrganizationLayout/components/NavBar/NewSubOrganizationForm";
 import { navigateUserToOrg } from "@app/pages/auth/LoginPage/Login.utils";
 
 const editSubOrgSchema = z.object({
@@ -160,6 +171,8 @@ export const OrgSubOrgsTab = () => {
 
   useResetPageHelper({ setPage, offset, totalCount });
 
+  const location = useLocation();
+
   const handleLoginSubOrg = async (subOrgId: string) => {
     const { token, isMfaEnabled, mfaMethod } = await selectOrganization({
       organizationId: subOrgId
@@ -180,7 +193,12 @@ export const OrgSubOrgsTab = () => {
     SecurityClient.setToken(token);
     queryClient.removeQueries({ queryKey: authKeys.getAuthToken });
     await queryClient.refetchQueries({ queryKey: authKeys.getAuthToken });
-    await navigateUserToOrg({ navigate, organizationId: subOrgId });
+    await navigateUserToOrg({
+      navigate,
+      organizationId: subOrgId,
+      switchFrom: location,
+      isSubOrganization: true
+    });
   };
 
   const handleOpenEditModal = (subOrg: TSubOrganization) => {
@@ -214,14 +232,12 @@ export const OrgSubOrgsTab = () => {
 
   if (shouldShowMfa) {
     return (
-      <div className="flex max-h-screen min-h-screen flex-col items-center justify-center gap-2 overflow-y-auto bg-linear-to-tr from-mineshaft-600 via-mineshaft-800 to-bunker-700">
-        <Mfa
-          email={user.email as string}
-          method={requiredMfaMethod}
-          successCallback={mfaSuccessCallback}
-          closeMfa={() => toggleShowMfa.off()}
-        />
-      </div>
+      <Mfa
+        email={user.email as string}
+        method={requiredMfaMethod}
+        successCallback={mfaSuccessCallback}
+        closeMfa={() => toggleShowMfa.off()}
+      />
     );
   }
 
@@ -430,66 +446,63 @@ export const OrgSubOrgsTab = () => {
         </CardContent>
       </Card>
 
-      <Modal
+      <NewSubOrganizationModal
         isOpen={popUp.addSubOrg.isOpen}
         onOpenChange={(isOpen) => handlePopUpToggle("addSubOrg", isOpen)}
-      >
-        <ModalContent
-          title="Add Sub Org"
-          subTitle="Create a new sub-organization under this organization."
-        >
-          <NewSubOrganizationForm
-            onClose={() => handlePopUpClose("addSubOrg")}
-            handleOrgSelection={() => handlePopUpClose("addSubOrg")}
-          />
-        </ModalContent>
-      </Modal>
+      />
 
-      <Modal
-        isOpen={popUp.editSubOrg.isOpen}
+      <Dialog
+        open={popUp.editSubOrg.isOpen}
         onOpenChange={(isOpen) => handlePopUpToggle("editSubOrg", isOpen)}
       >
-        <ModalContent
-          title="Edit Sub-Org"
-          subTitle="Update the name and slug of this sub-organization."
-          footerContent={
-            <div className="flex items-center gap-2">
-              <Button variant="org" type="submit" form="edit-sub-org-form" isPending={isUpdating}>
+        <DialogContent isPending={isUpdating}>
+          <DialogHeader>
+            <DialogTitle>Edit Sub-Org</DialogTitle>
+            <DialogDescription>
+              Update the name and slug of this sub-organization.
+            </DialogDescription>
+          </DialogHeader>
+          <form className="flex flex-col gap-4" onSubmit={handleSubmit(handleEditSubmit)}>
+            <Field>
+              <FieldLabel htmlFor="edit-sub-org-name">Name</FieldLabel>
+              <Input
+                id="edit-sub-org-name"
+                {...register("name")}
+                placeholder="My Sub-Organization"
+                autoComplete="off"
+                isError={Boolean(errors.name)}
+              />
+              <FieldError>{errors.name?.message}</FieldError>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="edit-sub-org-slug">Slug (optional)</FieldLabel>
+              <Input
+                id="edit-sub-org-slug"
+                {...register("slug")}
+                placeholder="my-sub-organization"
+                isError={Boolean(errors.slug)}
+              />
+              <FieldError>{errors.slug?.message}</FieldError>
+            </Field>
+            <DialogFooter>
+              <DialogClose asChild>
+                <Button variant="ghost">Cancel</Button>
+              </DialogClose>
+              <Button variant="org" type="submit" isPending={isUpdating}>
                 Save Changes
               </Button>
-              <Button variant="outline" onClick={() => handlePopUpClose("editSubOrg")}>
-                Cancel
-              </Button>
-            </div>
-          }
-        >
-          <form id="edit-sub-org-form" onSubmit={handleSubmit(handleEditSubmit)}>
-            <FormControl
-              label="Name"
-              isError={Boolean(errors.name)}
-              errorText={errors.name?.message}
-            >
-              <Input {...register("name")} placeholder="My Sub-Organization" />
-            </FormControl>
-            <FormControl
-              label="Slug"
-              isError={Boolean(errors.slug)}
-              errorText={errors.slug?.message}
-              isOptional
-            >
-              <Input {...register("slug")} placeholder="my-sub-organization" />
-            </FormControl>
+            </DialogFooter>
           </form>
-        </ModalContent>
-      </Modal>
+        </DialogContent>
+      </Dialog>
 
-      <DeleteActionModal
+      <ConfirmationAlertDialog
         isOpen={popUp.deleteSubOrg.isOpen}
-        onChange={(isOpen) => handlePopUpToggle("deleteSubOrg", isOpen)}
+        onOpenChange={(isOpen) => handlePopUpToggle("deleteSubOrg", isOpen)}
         title="Are you sure you want to delete this sub-organization?"
-        subTitle={`Permanently remove ${selectedSubOrg?.name} and all of its data. This action is not reversible, so please be careful.`}
-        deleteKey="confirm"
-        onDeleteApproved={handleDeleteApproved}
+        description={`Permanently remove ${selectedSubOrg?.name} and all of its data. This action is not reversible, so please be careful.`}
+        confirmKey="confirm"
+        onConfirm={handleDeleteApproved}
       />
     </>
   );

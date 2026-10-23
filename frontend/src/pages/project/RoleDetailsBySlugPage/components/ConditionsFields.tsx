@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { Controller, useFieldArray, useFormContext, useWatch } from "react-hook-form";
-import { AlertTriangleIcon, InfoIcon, PlusIcon, TrashIcon } from "lucide-react";
+import { useIsFetching, useQueryClient } from "@tanstack/react-query";
+import { AlertTriangleIcon, InfoIcon, PlusIcon, RefreshCwIcon, TrashIcon } from "lucide-react";
 import { twMerge } from "tailwind-merge";
 
 import {
@@ -13,6 +14,9 @@ import {
   FieldError,
   IconButton,
   Input,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
   Select,
   SelectContent,
   SelectItem,
@@ -22,10 +26,13 @@ import {
   TooltipContent,
   TooltipTrigger
 } from "@app/components/v3";
+import { useProject } from "@app/context";
 import {
   ConditionalProjectPermissionSubject,
   PermissionConditionOperators
 } from "@app/context/ProjectPermissionContext/types";
+import { projectKeys } from "@app/hooks/api";
+import { useGetWsTags } from "@app/hooks/api/tags";
 
 import {
   getConditionOperatorHelperInfo,
@@ -103,6 +110,10 @@ export const ConditionsFields = ({
   actionConditionsMap,
   actionLabelsMap
 }: ConditionsFieldsProps) => {
+  const { currentProject, projectId } = useProject();
+  const queryClient = useQueryClient();
+  const isProjectRefreshing =
+    useIsFetching({ queryKey: projectKeys.getProjectById(projectId) }) > 0;
   const { control, setValue, clearErrors, setError } = useFormContext<TFormSchema>();
   const items = useFieldArray({
     control,
@@ -120,13 +131,26 @@ export const ConditionsFields = ({
     control,
     name: `permissions.${subject}.${position}.conditions` as const
   });
+  const conditionValues = watchedConditions as
+    | Array<{ lhs: string; rhs: string; operator: string }>
+    | undefined;
+  const hasReferenceConditions = conditionValues?.some(
+    ({ lhs }) => lhs === "environment" || lhs === "secretTags"
+  );
+  const hasTagCondition = conditionValues?.some(({ lhs }) => lhs === "secretTags");
+  const {
+    data: projectTags,
+    isPending: isTagsPending,
+    isError: isTagsError,
+    isFetching: isTagsFetching,
+    refetch: refetchTags
+  } = useGetWsTags(projectId, Boolean(hasTagCondition));
 
   useEffect(() => {
-    const conditions = watchedConditions as Array<{ lhs: string }> | undefined;
-    if (!conditions || conditions.length === 0) return;
+    if (!conditionValues?.length) return;
     if (!actionConditionsMap || !actionLabelsMap) return;
 
-    conditions.forEach((condition: { lhs: string }, index: number) => {
+    conditionValues.forEach((condition, index) => {
       const conditionKey = condition?.lhs;
       if (!conditionKey) return;
 
@@ -152,7 +176,7 @@ export const ConditionsFields = ({
     });
   }, [
     selectedActions,
-    watchedConditions,
+    conditionValues,
     actionConditionsMap,
     actionLabelsMap,
     subject,
@@ -162,10 +186,9 @@ export const ConditionsFields = ({
   ]);
 
   const usedConditionTypes = useMemo((): string[] => {
-    const conditions = watchedConditions as Array<{ lhs: string }> | undefined;
-    if (!conditions) return [];
-    return conditions.map((c) => c.lhs).filter(Boolean);
-  }, [watchedConditions]);
+    if (!conditionValues) return [];
+    return conditionValues.map((c) => c.lhs).filter(Boolean);
+  }, [conditionValues]);
 
   const canAddCondition = useMemo(() => {
     const availableToAdd = selectOptions.filter(
@@ -175,8 +198,7 @@ export const ConditionsFields = ({
   }, [selectOptions, allowedConditions, usedConditionTypes]);
 
   const incompatibleConditions = useMemo(() => {
-    const conditions = watchedConditions as Array<{ lhs: string }> | undefined;
-    if (!conditions || conditions.length === 0) return [];
+    if (!conditionValues?.length) return [];
     if (!actionConditionsMap || !actionLabelsMap) return [];
 
     const incompatible: Array<{
@@ -185,7 +207,7 @@ export const ConditionsFields = ({
       disallowingActionLabels: string;
     }> = [];
 
-    conditions.forEach((condition: { lhs: string }) => {
+    conditionValues.forEach((condition) => {
       const conditionKey = condition?.lhs;
       if (!conditionKey) return;
 
@@ -211,7 +233,7 @@ export const ConditionsFields = ({
     });
 
     return incompatible;
-  }, [watchedConditions, selectedActions, actionConditionsMap, actionLabelsMap, selectOptions]);
+  }, [conditionValues, selectedActions, actionConditionsMap, actionLabelsMap, selectOptions]);
 
   const getDefaultOperator = (conditionType: string): PermissionConditionOperators => {
     switch (conditionType) {
@@ -239,7 +261,7 @@ export const ConditionsFields = ({
 
   return (
     <div className="mt-6 border-t border-t-border bg-card pt-2">
-      <div className="flex w-full items-center justify-between">
+      <div className="flex w-full flex-wrap items-center justify-between gap-x-2">
         <div className="mt-2.5 flex items-center text-foreground">
           <span>Conditions</span>
           <Tooltip>
@@ -257,37 +279,55 @@ export const ConditionsFields = ({
             </TooltipContent>
           </Tooltip>
         </div>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span>
-              <Button
-                type="button"
-                variant="outline"
-                size="xs"
-                className="mt-2"
-                isDisabled={isDisabled || !canAddCondition}
-                onClick={() => {
-                  const { lhs, operator } = getFirstAvailableCondition();
-                  items.append({
-                    lhs,
-                    operator,
-                    rhs: ""
-                  });
-                }}
-              >
-                <PlusIcon className="size-4" />
-                Add Condition
-              </Button>
-            </span>
-          </TooltipTrigger>
-          {!canAddCondition && !isDisabled && (
-            <TooltipContent side="top">
-              {allowedConditions.length === 0
-                ? "No conditions available for the selected group of actions."
-                : "All available conditions have been added"}
-            </TooltipContent>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {hasReferenceConditions && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              className="mt-2"
+              isDisabled={isProjectRefreshing || isTagsFetching}
+              onClick={() => {
+                queryClient.invalidateQueries({ queryKey: projectKeys.getProjectById(projectId) });
+                if (hasTagCondition) refetchTags();
+              }}
+            >
+              <RefreshCwIcon />
+              Refresh References
+            </Button>
           )}
-        </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  className="mt-2"
+                  isDisabled={isDisabled || !canAddCondition}
+                  onClick={() => {
+                    const { lhs, operator } = getFirstAvailableCondition();
+                    items.append({
+                      lhs,
+                      operator,
+                      rhs: ""
+                    });
+                  }}
+                >
+                  <PlusIcon className="size-4" />
+                  Add Condition
+                </Button>
+              </span>
+            </TooltipTrigger>
+            {!canAddCondition && !isDisabled && (
+              <TooltipContent side="top">
+                {allowedConditions.length === 0
+                  ? "No conditions available for the selected group of actions."
+                  : "All available conditions have been added"}
+              </TooltipContent>
+            )}
+          </Tooltip>
+        </div>
       </div>
       {incompatibleConditions.length > 0 && (
         <Accordion type="single" collapsible className="mt-3 border-danger/35">
@@ -322,10 +362,37 @@ export const ConditionsFields = ({
       <div className="mt-2 flex flex-col space-y-2">
         {items.fields.length > 0 &&
           items.fields.map((el, index) => {
-            const conditions = watchedConditions as
-              | Array<{ lhs: string; rhs: string; operator: string }>
-              | undefined;
-            const condition = conditions?.[index] || { lhs: "", rhs: "", operator: "" };
+            const condition = conditionValues?.[index] || { lhs: "", rhs: "", operator: "" };
+            const isReferenceCondition =
+              condition.lhs === "environment" || condition.lhs === "secretTags";
+            const isLiteralOperator =
+              condition.operator === PermissionConditionOperators.$EQ ||
+              condition.operator === PermissionConditionOperators.$NEQ ||
+              condition.operator === PermissionConditionOperators.$IN ||
+              condition.operator === PermissionConditionOperators.$ALL;
+            const isTagLookupUnavailable =
+              condition.lhs === "secretTags" &&
+              (isTagsPending || isTagsFetching || isTagsError || !projectTags);
+            const isReferenceRefreshing = condition.lhs === "environment" && isProjectRefreshing;
+            const knownSlugs =
+              condition.lhs === "environment"
+                ? currentProject.environments?.map(({ slug }) => slug)
+                : projectTags?.map(({ slug }) => slug);
+            const unknownSlugs =
+              isReferenceCondition &&
+              isLiteralOperator &&
+              !isTagLookupUnavailable &&
+              !isReferenceRefreshing &&
+              knownSlugs
+                ? [
+                    ...new Set(
+                      condition.operator === PermissionConditionOperators.$IN ||
+                      condition.operator === PermissionConditionOperators.$ALL
+                        ? condition.rhs.split(",")
+                        : [condition.rhs]
+                    )
+                  ].filter((slug) => slug !== "" && !knownSlugs.includes(slug))
+                : [];
 
             // Filter out already used conditions (except current row's condition)
             const availableOptionsForRow = selectOptions.filter(
@@ -452,16 +519,42 @@ export const ConditionsFields = ({
                               )}
                             />
                             <div>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <InfoIcon className="size-4 text-muted" />
-                                </TooltipTrigger>
-                                <TooltipContent className="max-w-xs text-wrap">
-                                  {getConditionOperatorHelperInfo(
-                                    condition?.operator as PermissionConditionOperators
-                                  )}
-                                </TooltipContent>
-                              </Tooltip>
+                              {condition?.operator === PermissionConditionOperators.$GLOB ? (
+                                // The glob helper contains inputs for testing patterns, so it
+                                // needs a container that stays open while interacting with it
+                                <Popover>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <PopoverTrigger asChild>
+                                        <IconButton
+                                          aria-label="Glob pattern reference"
+                                          variant="ghost-muted"
+                                          size="xs"
+                                        >
+                                          <InfoIcon />
+                                        </IconButton>
+                                      </PopoverTrigger>
+                                    </TooltipTrigger>
+                                    <TooltipContent>Glob pattern reference</TooltipContent>
+                                  </Tooltip>
+                                  <PopoverContent className="w-96">
+                                    {getConditionOperatorHelperInfo(
+                                      condition.operator as PermissionConditionOperators
+                                    )}
+                                  </PopoverContent>
+                                </Popover>
+                              ) : (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <InfoIcon className="size-4 text-muted" />
+                                  </TooltipTrigger>
+                                  <TooltipContent className="max-w-xs text-wrap">
+                                    {getConditionOperatorHelperInfo(
+                                      condition?.operator as PermissionConditionOperators
+                                    )}
+                                  </TooltipContent>
+                                </Tooltip>
+                              )}
                             </div>
                           </div>
                           <div className="grow">
@@ -495,6 +588,42 @@ export const ConditionsFields = ({
                             <div className="w-10" />
                           </div>
                         )}
+                        {isReferenceCondition &&
+                          isLiteralOperator &&
+                          (unknownSlugs.length > 0 ||
+                            isTagLookupUnavailable ||
+                            isReferenceRefreshing) && (
+                            <div className="mt-2 flex items-start gap-2 pb-1 text-xs">
+                              <div className="hidden w-1/4 xl:block" />
+                              <div className="hidden w-44 xl:block" />
+                              <div
+                                className={twMerge(
+                                  "min-w-0 grow basis-full rounded-md border px-2 py-1 xl:basis-0",
+                                  unknownSlugs.length > 0
+                                    ? "border-warning/20 bg-warning/5"
+                                    : "border-border bg-card"
+                                )}
+                              >
+                                {unknownSlugs.length > 0 ? (
+                                  <p className="break-words text-warning" role="status">
+                                    <AlertTriangleIcon className="mr-1 inline size-3.5 align-[-0.125em]" />
+                                    {condition.lhs === "environment" ? "Environment" : "Tag"}
+                                    {unknownSlugs.length > 1 ? "s" : ""}{" "}
+                                    {unknownSlugs.map((slug) => JSON.stringify(slug)).join(", ")}{" "}
+                                    {unknownSlugs.length === 1 ? "doesn't" : "don't"} exist in your
+                                    project. You can still save.
+                                  </p>
+                                ) : (
+                                  <p className="text-muted" role="status">
+                                    {isTagsPending || isTagsFetching || isReferenceRefreshing
+                                      ? "Checking project references…"
+                                      : "Could not check project secret tags. You can still save this policy."}
+                                  </p>
+                                )}
+                              </div>
+                              <div className="hidden w-10 xl:block" />
+                            </div>
+                          )}
                       </div>
                     )}
                   />

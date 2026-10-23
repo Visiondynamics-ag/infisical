@@ -802,6 +802,7 @@ export const useAddIdentityTlsCertAuth = () => {
       identityId,
       allowedCommonNames,
       allowedSubjectAltNames,
+      verifyClientCertificateChain,
       caCertificate,
       accessTokenTTL,
       accessTokenMaxTTL,
@@ -815,6 +816,7 @@ export const useAddIdentityTlsCertAuth = () => {
         {
           allowedCommonNames,
           allowedSubjectAltNames,
+          verifyClientCertificateChain,
           caCertificate,
           accessTokenTTL,
           accessTokenMaxTTL,
@@ -854,6 +856,7 @@ export const useUpdateIdentityTlsCertAuth = () => {
       identityId,
       allowedCommonNames,
       allowedSubjectAltNames,
+      verifyClientCertificateChain,
       caCertificate,
       accessTokenTTL,
       accessTokenMaxTTL,
@@ -868,6 +871,7 @@ export const useUpdateIdentityTlsCertAuth = () => {
           caCertificate,
           allowedCommonNames,
           allowedSubjectAltNames,
+          verifyClientCertificateChain,
           accessTokenTTL,
           accessTokenMaxTTL,
           accessTokenNumUsesLimit,
@@ -935,6 +939,7 @@ export const useUpdateIdentityOidcAuth = () => {
   return useMutation<IdentityOidcAuth, object, UpdateIdentityOidcAuthDTO>({
     mutationFn: async ({
       identityId,
+      templateId,
       accessTokenTTL,
       accessTokenMaxTTL,
       accessTokenNumUsesLimit,
@@ -952,6 +957,7 @@ export const useUpdateIdentityOidcAuth = () => {
       } = await apiRequest.patch<{ identityOidcAuth: IdentityOidcAuth }>(
         `/api/v1/auth/oidc-auth/identities/${identityId}`,
         {
+          templateId,
           oidcDiscoveryUrl,
           caCert,
           boundIssuer,
@@ -993,6 +999,7 @@ export const useAddIdentityOidcAuth = () => {
   return useMutation<IdentityOidcAuth, object, AddIdentityOidcAuthDTO>({
     mutationFn: async ({
       identityId,
+      templateId,
       oidcDiscoveryUrl,
       caCert,
       boundIssuer,
@@ -1010,6 +1017,7 @@ export const useAddIdentityOidcAuth = () => {
       } = await apiRequest.post<{ identityOidcAuth: IdentityOidcAuth }>(
         `/api/v1/auth/oidc-auth/identities/${identityId}`,
         {
+          templateId,
           oidcDiscoveryUrl,
           caCert,
           boundIssuer,
@@ -1413,6 +1421,7 @@ export const useAddIdentityKubernetesAuth = () => {
   return useMutation<IdentityKubernetesAuth, object, AddIdentityKubernetesAuthDTO>({
     mutationFn: async ({
       identityId,
+      templateId,
       kubernetesHost,
       tokenReviewerJwt,
       allowedNames,
@@ -1425,13 +1434,15 @@ export const useAddIdentityKubernetesAuth = () => {
       accessTokenTrustedIps,
       gatewayId,
       gatewayPoolId,
-      tokenReviewMode
+      tokenReviewMode,
+      verifyTlsCertificate
     }) => {
       const {
         data: { identityKubernetesAuth }
       } = await apiRequest.post<{ identityKubernetesAuth: IdentityKubernetesAuth }>(
         `/api/v1/auth/kubernetes-auth/identities/${identityId}`,
         {
+          templateId,
           kubernetesHost,
           tokenReviewerJwt,
           allowedNames,
@@ -1444,7 +1455,8 @@ export const useAddIdentityKubernetesAuth = () => {
           accessTokenTrustedIps,
           gatewayId,
           gatewayPoolId,
-          tokenReviewMode
+          tokenReviewMode,
+          verifyTlsCertificate
         }
       );
 
@@ -1557,6 +1569,7 @@ export const useUpdateIdentityKubernetesAuth = () => {
   return useMutation<IdentityKubernetesAuth, object, UpdateIdentityKubernetesAuthDTO>({
     mutationFn: async ({
       identityId,
+      templateId,
       kubernetesHost,
       tokenReviewerJwt,
       allowedNamespaces,
@@ -1569,13 +1582,16 @@ export const useUpdateIdentityKubernetesAuth = () => {
       accessTokenTrustedIps,
       gatewayId,
       gatewayPoolId,
-      tokenReviewMode
+      tokenReviewMode,
+      verifyTlsCertificate
     }) => {
       const {
         data: { identityKubernetesAuth }
       } = await apiRequest.patch<{ identityKubernetesAuth: IdentityKubernetesAuth }>(
         `/api/v1/auth/kubernetes-auth/identities/${identityId}`,
         {
+          // tri-state: undefined keeps the current template link, null unlinks, uuid links
+          templateId,
           kubernetesHost,
           tokenReviewerJwt,
           allowedNames,
@@ -1588,7 +1604,8 @@ export const useUpdateIdentityKubernetesAuth = () => {
           accessTokenTrustedIps,
           gatewayId,
           gatewayPoolId,
-          tokenReviewMode
+          tokenReviewMode,
+          verifyTlsCertificate
         }
       );
 

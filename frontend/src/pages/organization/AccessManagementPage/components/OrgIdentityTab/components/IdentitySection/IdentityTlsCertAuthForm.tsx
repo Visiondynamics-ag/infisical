@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useParams } from "@tanstack/react-router";
 import { InfoIcon } from "lucide-react";
 import { z } from "zod";
 
@@ -17,6 +16,7 @@ import {
   TabsList,
   TabsTrigger,
   TextArea,
+  Toggle,
   Tooltip,
   TooltipContent,
   TooltipTrigger
@@ -29,7 +29,7 @@ import {
   superRefineAccessTokenTtl,
   trustedIpsSchema
 } from "@app/helpers/identityAuthSchemas";
-import { useScopeVariant } from "@app/hooks";
+import { useRouteProjectId, useScopeVariant } from "@app/hooks";
 import {
   useAddIdentityTlsCertAuth,
   useGetIdentityTlsCertAuth,
@@ -48,6 +48,7 @@ const buildSchema = (maxAccessTokenTTL: number) =>
       allowedCommonNames: z.string().optional(),
       allowedSubjectAltNames: z.string().optional(),
       caCertificate: z.string().min(1),
+      verifyClientCertificateChain: z.boolean().default(false),
       accessTokenTTL: accessTokenTtlSchema(maxAccessTokenTTL, "Access Token TTL"),
       accessTokenMaxTTL: accessTokenTtlSchema(maxAccessTokenTTL, "Access Token Max TTL"),
       accessTokenNumUsesLimit: z.string(),
@@ -83,9 +84,7 @@ export const IdentityTlsCertAuthForm = ({
   const { currentOrg } = useOrganization();
   const orgId = currentOrg?.id || "";
   const { subscription } = useSubscription();
-  const { projectId } = useParams({
-    strict: false
-  });
+  const projectId = useRouteProjectId();
   const scopeVariant = useScopeVariant();
   const { mutateAsync: addMutateAsync } = useAddIdentityTlsCertAuth();
   const { mutateAsync: updateMutateAsync } = useUpdateIdentityTlsCertAuth();
@@ -106,6 +105,7 @@ export const IdentityTlsCertAuthForm = ({
     resolver,
     defaultValues: {
       caCertificate: "",
+      verifyClientCertificateChain: false,
       accessTokenTTL: "2592000",
       accessTokenMaxTTL: "2592000",
       accessTokenNumUsesLimit: "",
@@ -119,6 +119,7 @@ export const IdentityTlsCertAuthForm = ({
         caCertificate: data.caCertificate,
         allowedCommonNames: data.allowedCommonNames || undefined,
         allowedSubjectAltNames: data.allowedSubjectAltNames?.join("\n") || undefined,
+        verifyClientCertificateChain: data.verifyClientCertificateChain ?? false,
         accessTokenTTL: String(data.accessTokenTTL),
         accessTokenMaxTTL: String(data.accessTokenMaxTTL),
         accessTokenNumUsesLimit: data.accessTokenNumUsesLimit
@@ -129,6 +130,7 @@ export const IdentityTlsCertAuthForm = ({
     } else {
       reset({
         caCertificate: "",
+        verifyClientCertificateChain: false,
         accessTokenTTL: "2592000",
         accessTokenMaxTTL: "2592000",
         accessTokenNumUsesLimit: "",
@@ -145,6 +147,7 @@ export const IdentityTlsCertAuthForm = ({
     caCertificate,
     allowedCommonNames,
     allowedSubjectAltNames,
+    verifyClientCertificateChain,
     accessTokenTTL,
     accessTokenMaxTTL,
     accessTokenNumUsesLimit,
@@ -167,6 +170,7 @@ export const IdentityTlsCertAuthForm = ({
         allowedSubjectAltNames: allowedSubjectAltNamesList.length
           ? allowedSubjectAltNamesList
           : null,
+        verifyClientCertificateChain,
         identityId,
         accessTokenTTL: Number(accessTokenTTL),
         accessTokenMaxTTL: Number(accessTokenMaxTTL),
@@ -182,6 +186,7 @@ export const IdentityTlsCertAuthForm = ({
         allowedSubjectAltNames: allowedSubjectAltNamesList.length
           ? allowedSubjectAltNamesList
           : undefined,
+        verifyClientCertificateChain,
         accessTokenTTL: Number(accessTokenTTL),
         accessTokenMaxTTL: Number(accessTokenMaxTTL),
         accessTokenNumUsesLimit: Number(accessTokenNumUsesLimit || "0"),
@@ -300,6 +305,39 @@ export const IdentityTlsCertAuthForm = ({
         </TabsContent>
         <TabsContent value={IdentityFormTab.Advanced}>
           <FieldGroup>
+            <Controller
+              control={control}
+              name="verifyClientCertificateChain"
+              render={({ field }) => (
+                <Field>
+                  <div className="flex items-center justify-between gap-3">
+                    <FieldLabel
+                      htmlFor="verifyClientCertificateChain"
+                      className="inline-flex items-center gap-1.5"
+                    >
+                      Verify Client Certificate Chain
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <InfoIcon className="size-3.5 text-muted" />
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-md">
+                          When disabled, the CA certificate must be the direct issuer of the
+                          client&apos;s leaf certificate. When enabled, the CA certificate is
+                          treated as a trust anchor and the client-presented chain (leaf plus
+                          intermediates) is validated up to it, supporting issuers that rotate
+                          beneath a stable root such as SPIRE X.509-SVIDs.
+                        </TooltipContent>
+                      </Tooltip>
+                    </FieldLabel>
+                    <Toggle
+                      id="verifyClientCertificateChain"
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                    />
+                  </div>
+                </Field>
+              )}
+            />
             <TrustedIpsField
               control={control}
               name="accessTokenTrustedIps"

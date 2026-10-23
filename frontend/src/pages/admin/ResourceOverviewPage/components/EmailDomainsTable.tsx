@@ -1,42 +1,45 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
-import {
-  faEllipsisV,
-  faGlobe,
-  faMagnifyingGlass,
-  faPlus,
-  faTrash
-} from "@fortawesome/free-solid-svg-icons";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { EllipsisVerticalIcon, GlobeIcon, PlusIcon, SearchIcon, Trash2Icon } from "lucide-react";
 import { z } from "zod";
 
 import { createNotification } from "@app/components/notifications";
 import {
+  Badge,
   Button,
-  DeleteActionModal,
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  Combobox,
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-  EmptyState,
-  FilterableSelect,
-  FormControl,
+  Field,
+  FieldError,
+  FieldLabel,
   IconButton,
   Input,
-  Modal,
-  ModalContent,
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
   Pagination,
   Table,
-  TableContainer,
-  TableSkeleton,
-  TBody,
-  Td,
-  Th,
-  THead,
-  Tr
-} from "@app/components/v2";
-import { Badge } from "@app/components/v3";
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow
+} from "@app/components/v3";
 import {
   getUserTablePreference,
   PreferenceKey,
@@ -49,7 +52,8 @@ import {
   useAdminGetEmailDomains,
   useAdminGetOrganizations
 } from "@app/hooks/api";
-import { OrganizationWithProjects } from "@app/hooks/api/admin/types";
+import { ConfirmActionDialog } from "@app/pages/admin/components/ConfirmActionDialog";
+import { V3TableEmptyState, V3TableSkeleton } from "@app/pages/admin/components/V3TableHelpers";
 
 const AddEmailDomainSchema = z.object({
   organization: z.object({ id: z.string(), name: z.string() }),
@@ -57,17 +61,21 @@ const AddEmailDomainSchema = z.object({
 });
 
 type AddEmailDomainFormData = z.infer<typeof AddEmailDomainSchema>;
+type OrganizationOption = AddEmailDomainFormData["organization"];
 
 const AddEmailDomainContent = ({ onClose }: { onClose: () => void }) => {
   const createEmailDomain = useAdminCreateEmailDomain();
+  const organizationSelectId = useId();
 
   const {
     handleSubmit,
     control,
-    register,
     formState: { isSubmitting, errors }
   } = useForm<AddEmailDomainFormData>({
-    resolver: zodResolver(AddEmailDomainSchema)
+    resolver: zodResolver(AddEmailDomainSchema),
+    defaultValues: {
+      domain: ""
+    }
   });
 
   const [searchOrgFilter, setSearchOrgFilter] = useState("");
@@ -83,7 +91,10 @@ const AddEmailDomainContent = ({ onClose }: { onClose: () => void }) => {
   const onSubmit = async ({ organization, domain }: AddEmailDomainFormData) => {
     try {
       await createEmailDomain.mutateAsync({ orgId: organization.id, domain });
-      createNotification({ text: "Email domain added successfully", type: "success" });
+      createNotification({
+        text: "Email domain added successfully",
+        type: "success"
+      });
       onClose();
     } catch (err: any) {
       createNotification({
@@ -94,48 +105,62 @@ const AddEmailDomainContent = ({ onClose }: { onClose: () => void }) => {
   };
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)}>
+    <form className="flex flex-col gap-4" onSubmit={handleSubmit(onSubmit)}>
       <Controller
         control={control}
         name="organization"
         render={({ field, fieldState: { error } }) => (
-          <FormControl isError={Boolean(error)} errorText={error?.message} label="Organization">
-            <FilterableSelect<OrganizationWithProjects>
+          <Field>
+            <FieldLabel htmlFor={organizationSelectId}>Organization</FieldLabel>
+            <Combobox<OrganizationOption>
+              id={organizationSelectId}
               isLoading={searchOrgFilter !== debouncedSearchTerm || isPending}
-              placeholder="Search organizations..."
-              options={organizations}
+              isError={Boolean(error)}
+              options={organizations.map(({ id, name }) => ({ id, name }))}
               getOptionLabel={(org) => org.name}
               getOptionValue={(org) => org.id}
-              value={field.value as unknown as OrganizationWithProjects}
-              onChange={field.onChange}
-              onInputChange={(value) => {
+              value={field.value ?? null}
+              onValueChange={field.onChange}
+              onClear={() => field.onChange(undefined)}
+              placeholder="Select organization..."
+              searchPlaceholder="Search organizations..."
+              searchAriaLabel="Search organizations"
+              shouldFilter={false}
+              includeMissingSelectedOptions
+              modal
+              onInputValueChange={(value) => {
                 setSearchOrgFilter(value);
                 if (!value) setDebouncedSearchTerm("");
               }}
             />
-          </FormControl>
+            <FieldError>{error?.message}</FieldError>
+          </Field>
         )}
       />
-      <FormControl
-        isError={Boolean(errors.domain)}
-        errorText={errors.domain?.message}
-        label="Domain"
-      >
-        <Input {...register("domain")} placeholder="company.com" />
-      </FormControl>
-      <div className="flex w-full gap-4 pt-4">
-        <Button
-          type="submit"
-          isLoading={isSubmitting}
-          isDisabled={isSubmitting}
-          colorSchema="secondary"
-        >
-          Add Domain
-        </Button>
-        <Button onClick={onClose} variant="plain" colorSchema="secondary">
+      <Controller
+        control={control}
+        name="domain"
+        render={({ field }) => (
+          <Field>
+            <FieldLabel htmlFor="verified-email-domain">Domain</FieldLabel>
+            <Input
+              id="verified-email-domain"
+              placeholder="company.com"
+              isError={Boolean(errors.domain)}
+              {...field}
+            />
+            <FieldError>{errors.domain?.message}</FieldError>
+          </Field>
+        )}
+      />
+      <DialogFooter>
+        <Button variant="ghost" type="button" onClick={onClose}>
           Cancel
         </Button>
-      </div>
+        <Button variant="neutral" type="submit" isPending={isSubmitting}>
+          Add domain
+        </Button>
+      </DialogFooter>
     </form>
   );
 };
@@ -148,11 +173,14 @@ const AddEmailDomainModal = ({
   onOpenChange: (isOpen: boolean) => void;
 }) => {
   return (
-    <Modal isOpen={isOpen} onOpenChange={onOpenChange}>
-      <ModalContent bodyClassName="overflow-visible" title="Add Verified Email Domain">
+    <Dialog open={isOpen} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader className="text-left">
+          <DialogTitle>Add Verified Email Domain</DialogTitle>
+        </DialogHeader>
         <AddEmailDomainContent onClose={() => onOpenChange(false)} />
-      </ModalContent>
-    </Modal>
+      </DialogContent>
+    </Dialog>
   );
 };
 
@@ -192,121 +220,121 @@ export const EmailDomainsTable = () => {
   const { mutateAsync: deleteEmailDomain } = useAdminDeleteEmailDomain();
 
   const handleDelete = async () => {
-    const { emailDomainId } = popUp?.deleteEmailDomain?.data as { emailDomainId: string };
+    const { emailDomainId } = popUp?.deleteEmailDomain?.data as {
+      emailDomainId: string;
+    };
     await deleteEmailDomain(emailDomainId);
     createNotification({ text: "Email domain deleted", type: "success" });
     handlePopUpClose("deleteEmailDomain");
   };
 
   return (
-    <div className="mb-6 rounded-lg border border-mineshaft-600 bg-mineshaft-900 p-4">
-      <div className="mb-4 flex items-center justify-between">
-        <div>
-          <p className="text-xl font-medium text-mineshaft-100">Email Domains</p>
-          <p className="text-sm text-bunker-300">
-            Manage verified email domains across your instance.
-          </p>
-        </div>
-        <Button
-          colorSchema="secondary"
-          onClick={() => handlePopUpOpen("addEmailDomain")}
-          leftIcon={<FontAwesomeIcon icon={faPlus} />}
-        >
-          Add Domain
-        </Button>
-      </div>
-      <Input
-        value={searchFilter}
-        onChange={(e) => setSearchFilter(e.target.value)}
-        leftIcon={<FontAwesomeIcon icon={faMagnifyingGlass} />}
-        placeholder="Search by domain or organization name..."
-        className="flex-1"
-      />
-      <div className="mt-4">
-        <TableContainer>
-          <Table>
-            <THead>
-              <Tr>
-                <Th className="w-1/3">Domain</Th>
-                <Th className="w-1/3">Organization</Th>
-                <Th className="w-1/6">Status</Th>
-                <Th className="w-5" />
-              </Tr>
-            </THead>
-            <TBody>
-              {isPending && <TableSkeleton columns={4} innerKey="email-domains" />}
-              {!isPending &&
-                emailDomains?.map((ed) => (
-                  <Tr key={ed.id} className="w-full">
-                    <Td className="max-w-0">
-                      <p className="truncate">{ed.domain}</p>
-                    </Td>
-                    <Td className="max-w-0">
-                      <p className="truncate">{ed.orgName ?? ed.orgId}</p>
-                    </Td>
-                    <Td>
-                      <Badge variant={ed.status === "verified" ? "success" : "warning"}>
-                        {ed.status}
-                      </Badge>
-                    </Td>
-                    <Td>
-                      <div className="flex justify-end">
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <IconButton
-                              ariaLabel="Options"
-                              colorSchema="secondary"
-                              className="w-6"
-                              variant="plain"
-                            >
-                              <FontAwesomeIcon icon={faEllipsisV} />
-                            </IconButton>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent sideOffset={2} align="end">
-                            <DropdownMenuItem
-                              icon={<FontAwesomeIcon icon={faTrash} />}
-                              onClick={() =>
-                                handlePopUpOpen("deleteEmailDomain", {
-                                  emailDomainId: ed.id,
-                                  domain: ed.domain
-                                })
-                              }
-                            >
-                              Delete Domain
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </div>
-                    </Td>
-                  </Tr>
-                ))}
-            </TBody>
-          </Table>
-          {!isPending && isEmpty && <EmptyState title="No email domains found" icon={faGlobe} />}
-        </TableContainer>
-        {!isPending && totalCount > 0 && (
-          <Pagination
-            count={totalCount}
-            page={page}
-            perPage={perPage}
-            onChangePage={setPage}
-            onChangePerPage={handlePerPageChange}
+    <Card className="mb-6">
+      <CardHeader>
+        <CardTitle>Email Domains</CardTitle>
+        <CardDescription>Manage verified email domains across your instance.</CardDescription>
+        <CardAction>
+          <Button variant="neutral" onClick={() => handlePopUpOpen("addEmailDomain")}>
+            <PlusIcon />
+            Add Domain
+          </Button>
+        </CardAction>
+      </CardHeader>
+      <CardContent>
+        <InputGroup>
+          <InputGroupAddon>
+            <SearchIcon />
+          </InputGroupAddon>
+          <InputGroupInput
+            aria-label="Search email domains"
+            value={searchFilter}
+            onChange={(e) => setSearchFilter(e.target.value)}
+            placeholder="Search by domain or organization name..."
           />
-        )}
-      </div>
-      <DeleteActionModal
+        </InputGroup>
+        <div className="mt-4">
+          {!isEmpty && (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-1/3">Domain</TableHead>
+                  <TableHead className="w-1/3">Organization</TableHead>
+                  <TableHead className="w-1/6">Status</TableHead>
+                  <TableHead variant="action" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {isPending && <V3TableSkeleton columns={4} name="email-domains" />}
+                {!isPending &&
+                  emailDomains?.map((ed) => (
+                    <TableRow key={ed.id} className="w-full">
+                      <TableCell className="max-w-0">
+                        <p className="truncate">{ed.domain}</p>
+                      </TableCell>
+                      <TableCell className="max-w-0">
+                        <p className="truncate">{ed.orgName ?? ed.orgId}</p>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={ed.status === "verified" ? "success" : "warning"}>
+                          {ed.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell variant="action">
+                        <div className="flex justify-end">
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <IconButton aria-label="Options" size="xs" variant="ghost">
+                                <EllipsisVerticalIcon />
+                              </IconButton>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent sideOffset={2} align="end">
+                              <DropdownMenuItem
+                                onClick={() =>
+                                  handlePopUpOpen("deleteEmailDomain", {
+                                    emailDomainId: ed.id,
+                                    domain: ed.domain
+                                  })
+                                }
+                              >
+                                <Trash2Icon />
+                                Delete Domain
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+              </TableBody>
+            </Table>
+          )}
+          {!isPending && isEmpty && (
+            <V3TableEmptyState title="No email domains found" icon={GlobeIcon} />
+          )}
+          {!isPending && totalCount > 0 && (
+            <Pagination
+              count={totalCount}
+              page={page}
+              perPage={perPage}
+              onChangePage={setPage}
+              onChangePerPage={handlePerPageChange}
+            />
+          )}
+        </div>
+      </CardContent>
+      <ConfirmActionDialog
         isOpen={popUp.deleteEmailDomain.isOpen}
-        deleteKey="delete"
+        confirmationKey="delete"
         title={`Are you sure you want to delete domain ${
           (popUp?.deleteEmailDomain?.data as { domain: string })?.domain || ""
         }?`}
-        onChange={(isOpen) => handlePopUpToggle("deleteEmailDomain", isOpen)}
-        onDeleteApproved={handleDelete}
+        onOpenChange={(isOpen) => handlePopUpToggle("deleteEmailDomain", isOpen)}
+        onConfirm={handleDelete}
       />
       <AddEmailDomainModal
         isOpen={popUp.addEmailDomain.isOpen}
         onOpenChange={(isOpen) => handlePopUpToggle("addEmailDomain", isOpen)}
       />
-    </div>
+    </Card>
   );
 };

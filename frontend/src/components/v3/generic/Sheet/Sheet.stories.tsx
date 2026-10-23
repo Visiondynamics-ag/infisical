@@ -1,9 +1,9 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 
 import { Button } from "../Button";
+import { Field, FieldGroup, FieldLabel } from "../Field";
 import { Input } from "../Input";
 import { Label } from "../Label";
-import { Separator } from "../Separator";
 import {
   Sheet,
   SheetClose,
@@ -51,7 +51,7 @@ export const Default: Story = {
     docs: {
       description: {
         story:
-          "The baseline slide-over — `side` defaults to `right`, the most common placement for detail panes and edit flows. Wrap the footer's Cancel button in `SheetClose` so it dismisses the sheet without managing state. `SheetContent` defaults to a responsive width (`w-3/4` with `sm:max-w-md`); override via `className` when you need more or less room."
+          'The baseline slide-over — `side` defaults to `right`, the most common placement for detail panes and edit flows. Wrap the footer\'s Cancel button in `SheetClose` so it dismisses the sheet without managing state. `SheetContent` defaults to a responsive width (`w-3/4` with `sm:max-w-md`). Use `size="form"` for a full-width mobile form capped at 3xl, `size="wide"` for 1100px workflows, or `size="workspace"` for 1500px multi-column workspaces.'
       }
     }
   },
@@ -67,17 +67,79 @@ export const Default: Story = {
             View and update metadata for the selected secret. Changes apply on save.
           </SheetDescription>
         </SheetHeader>
-        <div className="px-4 text-sm text-foreground">
+        <div className="p-4 text-sm text-foreground">
           <p>
             Place primary content here — the body grows to fill available height between the header
             and footer.
           </p>
         </div>
-        <SheetFooter>
+        <SheetFooter className="justify-end">
           <SheetClose asChild>
             <Button variant="ghost">Cancel</Button>
           </SheetClose>
           <Button>Save changes</Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
+  )
+};
+
+export const FormWidth: Story = {
+  name: "Example: Form Width",
+  render: () => (
+    <Sheet>
+      <SheetTrigger asChild>
+        <Button variant="outline">Create dynamic secret</Button>
+      </SheetTrigger>
+      <SheetContent size="form">
+        <SheetHeader>
+          <SheetTitle>Create Dynamic Secret</SheetTitle>
+          <SheetDescription>
+            Configure the provider and credentials for this secret.
+          </SheetDescription>
+        </SheetHeader>
+        <FieldGroup className="p-4">
+          <Field>
+            <FieldLabel htmlFor="dynamic-secret-name">Name</FieldLabel>
+            <Input id="dynamic-secret-name" placeholder="database-credentials" />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="dynamic-secret-path">Secret Path</FieldLabel>
+            <Input id="dynamic-secret-path" placeholder="/production" />
+          </Field>
+        </FieldGroup>
+        <SheetFooter>
+          <Button>Create Dynamic Secret</Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
+  )
+};
+
+export const WorkspaceWidth: Story = {
+  name: "Example: Workspace Width",
+  render: () => (
+    <Sheet>
+      <SheetTrigger asChild>
+        <Button variant="outline">Create secret sync</Button>
+      </SheetTrigger>
+      <SheetContent size="workspace">
+        <SheetHeader>
+          <SheetTitle>Create Secret Sync</SheetTitle>
+          <SheetDescription>Choose a source and destination for these secrets.</SheetDescription>
+        </SheetHeader>
+        <div className="grid gap-4 p-4 sm:grid-cols-2">
+          <Field>
+            <FieldLabel htmlFor="sync-source">Source</FieldLabel>
+            <Input id="sync-source" placeholder="Production" />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="sync-destination">Destination</FieldLabel>
+            <Input id="sync-destination" placeholder="AWS Secrets Manager" />
+          </Field>
+        </div>
+        <SheetFooter>
+          <Button>Create Secret Sync</Button>
         </SheetFooter>
       </SheetContent>
     </Sheet>
@@ -104,7 +166,7 @@ export const LeftSide: Story = {
           <SheetTitle>Filters</SheetTitle>
           <SheetDescription>Narrow the list of secrets by tag and environment.</SheetDescription>
         </SheetHeader>
-        <div className="flex flex-col gap-3 px-4 text-sm text-foreground">
+        <div className="flex flex-col gap-3 p-4 text-sm text-foreground">
           <div className="flex items-center justify-between">
             <span>Production</span>
             <span className="text-accent">12</span>
@@ -149,7 +211,7 @@ export const BottomSheet: Story = {
           <SheetTitle>Quick actions</SheetTitle>
           <SheetDescription>Choose an action to apply to the selected secret.</SheetDescription>
         </SheetHeader>
-        <div className="flex flex-col gap-2 px-4">
+        <div className="flex flex-col gap-2 p-4">
           <SheetClose asChild>
             <Button variant="ghost">Copy value</Button>
           </SheetClose>
@@ -225,7 +287,7 @@ export const WithForm: Story = {
             Update your display name and contact email. Changes apply immediately.
           </SheetDescription>
         </SheetHeader>
-        <div className="flex flex-col gap-4 px-4">
+        <div className="flex flex-col gap-4 p-4">
           <div className="flex flex-col gap-2">
             <Label htmlFor="sheet-name">Name</Label>
             <Input id="sheet-name" defaultValue="Scott Wilson" />
@@ -239,7 +301,7 @@ export const WithForm: Story = {
             <Input id="sheet-title" defaultValue="Software Engineer" />
           </div>
         </div>
-        <SheetFooter>
+        <SheetFooter className="justify-end">
           <SheetClose asChild>
             <Button variant="ghost">Cancel</Button>
           </SheetClose>
@@ -256,7 +318,7 @@ export const ScrollableContent: Story = {
     docs: {
       description: {
         story:
-          "For long bodies, anchor the header and footer while the middle scrolls — common for activity feeds, audit log details, and changelogs. Wrap the scroll region between two `Separator`s in a single flex column so the rules sit flush against the scrolling content; without the wrapper, `SheetContent`'s gap would push padding between them."
+          "For long bodies, anchor the header and footer while the middle scrolls — common for activity feeds, audit log details, and changelogs. The header's built-in bottom border frames the top of the scroll region; add `border-t` to the footer to frame the bottom."
       }
     }
   },
@@ -270,22 +332,18 @@ export const ScrollableContent: Story = {
           <SheetTitle>Recent activity</SheetTitle>
           <SheetDescription>Audit events for this secret over the last 30 days.</SheetDescription>
         </SheetHeader>
-        <div className="flex min-h-0 flex-1 flex-col">
-          <Separator />
-          <div className="flex thin-scrollbar flex-1 flex-col gap-3 overflow-y-auto px-4 text-sm text-foreground">
-            {Array.from({ length: 12 }).map((_, i) => (
-              // eslint-disable-next-line react/no-array-index-key
-              <div key={i} className="flex flex-col gap-1 border-b border-border pb-3">
-                <span className="font-medium">Event {i + 1}</span>
-                <span className="text-accent">
-                  Secret value updated by scott@infisical.com — {i + 1}h ago.
-                </span>
-              </div>
-            ))}
-          </div>
-          <Separator />
+        <div className="flex min-h-0 thin-scrollbar flex-1 flex-col gap-3 overflow-y-auto p-4 text-sm text-foreground">
+          {Array.from({ length: 12 }).map((_, i) => (
+            // eslint-disable-next-line react/no-array-index-key
+            <div key={i} className="flex flex-col gap-1 border-b border-border pb-3">
+              <span className="font-medium">Event {i + 1}</span>
+              <span className="text-accent">
+                Secret value updated by scott@infisical.com — {i + 1}h ago.
+              </span>
+            </div>
+          ))}
         </div>
-        <SheetFooter>
+        <SheetFooter className="justify-end border-t">
           <SheetClose asChild>
             <Button variant="ghost">Close</Button>
           </SheetClose>

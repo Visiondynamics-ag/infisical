@@ -1,0 +1,86 @@
+import { CertKeyAlgorithm } from "@app/hooks/api/certificates/enums";
+import { CertKeySource } from "@app/hooks/api/signers";
+
+import { PkiDocsUrls } from "../../../pki-docs-urls";
+
+export const KEY_SOURCE_SUPPORTED_CA_KEY_ALGORITHMS: Partial<
+  Record<CertKeySource, readonly CertKeyAlgorithm[]>
+> = {
+  [CertKeySource.Hsm]: [
+    CertKeyAlgorithm.RSA_2048,
+    CertKeyAlgorithm.RSA_4096,
+    CertKeyAlgorithm.ECDSA_P256,
+    CertKeyAlgorithm.ECDSA_P384
+  ],
+  [CertKeySource.AwsKms]: [
+    CertKeyAlgorithm.RSA_2048,
+    CertKeyAlgorithm.RSA_3072,
+    CertKeyAlgorithm.RSA_4096,
+    CertKeyAlgorithm.ECDSA_P256,
+    CertKeyAlgorithm.ECDSA_P384,
+    CertKeyAlgorithm.ECDSA_P521,
+    CertKeyAlgorithm.ML_DSA_44,
+    CertKeyAlgorithm.ML_DSA_65,
+    CertKeyAlgorithm.ML_DSA_87
+  ]
+};
+
+export const isKeyAlgorithmSupportedByKeySource = (
+  keySource: CertKeySource,
+  keyAlgorithm: CertKeyAlgorithm
+) => KEY_SOURCE_SUPPORTED_CA_KEY_ALGORITHMS[keySource]?.includes(keyAlgorithm) ?? true;
+
+export type HsmConnectorOption = { id: string; name: string; slotLabel: string };
+
+export type WizardStep = {
+  name: string;
+  shortDescription: string;
+  title: string;
+  subtitle: string;
+  rightLabel: string;
+  rightDescription: string;
+  docsUrl: string;
+};
+
+export const STEPS: WizardStep[] = [
+  {
+    name: "Basics",
+    shortDescription: "Name and type",
+    title: "Basics",
+    subtitle: "Name the certificate authority and choose whether it is a root or intermediate.",
+    rightLabel: "BASICS",
+    rightDescription:
+      "The name identifies the CA inside Infisical. A Root CA is self-signed and active immediately. An Intermediate CA is created pending a certificate, then signed by a parent CA after you generate its CSR.",
+    docsUrl: PkiDocsUrls.ca.internal
+  },
+  {
+    name: "Subject",
+    shortDescription: "Distinguished name",
+    title: "Subject",
+    subtitle: "The distinguished name (DN) embedded in the CA certificate.",
+    rightLabel: "SUBJECT",
+    rightDescription:
+      "The Common Name, Organization, and related fields make up the Distinguished Name that identifies this CA on every certificate it issues. At least one field is required.",
+    docsUrl: PkiDocsUrls.ca.internal
+  },
+  {
+    name: "Key & Validity",
+    shortDescription: "Source, algorithm, validity",
+    title: "Key & Validity",
+    subtitle: "Choose where the signing key is generated and how long the CA is valid.",
+    rightLabel: "KEY & VALIDITY",
+    rightDescription:
+      "Pick the key source: Infisical generates and manages the keypair, HSM keeps it inside your own Hardware Security Module, and AWS KMS creates it in your AWS account. With HSM and AWS KMS, every signature is performed there. Root CAs are self-signed immediately, so their validity and path length are set here.",
+    docsUrl: PkiDocsUrls.ca.internal
+  },
+  {
+    name: "Distribution",
+    shortDescription: "Revocation endpoints",
+    title: "Distribution",
+    subtitle: "Configure how clients check whether certificates from this CA are revoked.",
+    rightLabel: "DISTRIBUTION",
+    rightDescription:
+      "Certificates issued by this CA carry revocation endpoints so clients can check their status. OCSP answers for one certificate at a time, while a CRL lists every certificate this CA has revoked. The Infisical-managed CRL endpoint is included by default; add backup URLs or disable the managed one as needed.",
+    docsUrl: PkiDocsUrls.ca.internal
+  }
+];

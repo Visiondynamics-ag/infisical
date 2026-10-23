@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { subject } from "@casl/ability";
-import { useParams } from "@tanstack/react-router";
 import { EllipsisIcon, EyeIcon, LockIcon, PencilIcon, Trash2Icon } from "lucide-react";
 
 import { VariablePermissionCan } from "@app/components/permissions";
@@ -27,9 +26,10 @@ import {
   ProjectPermissionIdentityActions,
   ProjectPermissionSub
 } from "@app/context";
-import { usePopUp } from "@app/hooks";
+import { usePopUp, useRouteProjectId } from "@app/hooks";
 import { IdentityAuthMethod, identityAuthToNameMap } from "@app/hooks/api";
 import { IdentityAuthMethodModal } from "@app/pages/organization/AccessManagementPage/components/OrgIdentityTab/components/IdentitySection/IdentityAuthMethodModal";
+import { identityAuthMethodOptions } from "@app/pages/organization/AccessManagementPage/components/OrgIdentityTab/components/IdentitySection/IdentityAuthMethodModalContent";
 
 import { IdentityAuthRevokeDialog } from "./helpers";
 import { IdentityAuthMethodSheet } from "./IdentityAuthMethodSheet";
@@ -52,7 +52,7 @@ export const IdentityAuthMethodsTable = ({
   const [selectedAuthMethod, setSelectedAuthMethod] = useState<IdentityAuthMethod | null>(null);
   const [revokeAuthMethod, setRevokeAuthMethod] = useState<IdentityAuthMethod | null>(null);
 
-  const { projectId } = useParams({ strict: false });
+  const projectId = useRouteProjectId();
 
   const { popUp, handlePopUpOpen, handlePopUpToggle } = usePopUp([
     "identityAuthMethod",
@@ -84,6 +84,10 @@ export const IdentityAuthMethodsTable = ({
         <TableBody>
           {authMethods.map((authMethod) => {
             const isLockedOut = activeLockoutAuthMethods?.includes(authMethod);
+            const authMethodIcon = identityAuthMethodOptions.find(
+              ({ value }) => value === authMethod
+            )?.icon;
+
             return (
               <TableRow
                 key={authMethod}
@@ -92,6 +96,7 @@ export const IdentityAuthMethodsTable = ({
               >
                 <TableCell>
                   <div className="flex items-center gap-2">
+                    {authMethodIcon}
                     {identityAuthToNameMap[authMethod]}
                     {isLockedOut && (
                       <Tooltip>
@@ -121,8 +126,8 @@ export const IdentityAuthMethodsTable = ({
                         type={projectId ? "project" : "org"}
                         I={
                           projectId
-                            ? ProjectPermissionIdentityActions.Edit
-                            : OrgPermissionIdentityActions.Edit
+                            ? ProjectPermissionIdentityActions.EditAuth
+                            : OrgPermissionIdentityActions.EditAuth
                         }
                         a={
                           projectId
@@ -197,6 +202,7 @@ export const IdentityAuthMethodsTable = ({
           if (!open) setRevokeAuthMethod(null);
         }}
         identityId={identityId}
+        identityName={identityName}
         authMethod={revokeAuthMethod}
         onSuccess={onMutated}
       />

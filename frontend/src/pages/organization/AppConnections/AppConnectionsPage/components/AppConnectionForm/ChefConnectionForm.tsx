@@ -3,6 +3,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Info } from "lucide-react";
 import { z } from "zod";
 
+import { OrgPermissionCan } from "@app/components/permissions";
 import {
   Field,
   FieldError,
@@ -18,6 +19,9 @@ import {
   TooltipContent,
   TooltipTrigger
 } from "@app/components/v3";
+import { GatewayPicker } from "@app/components/v3/platform/GatewayPicker";
+import { OrgPermissionSubjects } from "@app/context";
+import { OrgGatewayPermissionActions } from "@app/context/OrgPermissionContext/types";
 import { APP_CONNECTION_MAP, getAppConnectionMethodDetails } from "@app/helpers/appConnections";
 import { ChefConnectionMethod, TChefConnection } from "@app/hooks/api/appConnections";
 import { AppConnection } from "@app/hooks/api/appConnections/enums";
@@ -44,7 +48,12 @@ const formSchema = z.discriminatedUnion("method", [
       serverUrl: z.string().trim().url("Valid Chef Server URL required").optional(),
       orgName: z.string().trim().min(1, "Organization name required"),
       userName: z.string().trim().min(1, "User name required"),
-      privateKey: z.string().trim().min(1, "Private key required")
+      privateKey: z.string().trim().min(1, "Private key required"),
+      dataBagSecret: z
+        .string()
+        .trim()
+        .optional()
+        .transform((value) => value || undefined)
     })
   })
 ]);
@@ -58,16 +67,63 @@ export const ChefConnectionForm = ({ appConnection, onSubmit }: Props) => {
     resolver: zodResolver(formSchema),
     defaultValues: appConnection ?? {
       app: AppConnection.Chef,
-      method: ChefConnectionMethod.UserKey
+      method: ChefConnectionMethod.UserKey,
+      gatewayId: null,
+      gatewayPoolId: null
     }
   });
 
-  const { handleSubmit, control } = form;
+  const { handleSubmit, control, setValue, watch } = form;
+
+  const gatewayId = watch("gatewayId");
+  const gatewayPoolId = watch("gatewayPoolId");
 
   return (
     <FormProvider {...form}>
       <form onSubmit={handleSubmit(onSubmit)}>
         {!isUpdate && <GenericAppConnectionsFields />}
+        <OrgPermissionCan
+          I={OrgGatewayPermissionActions.AttachGateways}
+          a={OrgPermissionSubjects.Gateway}
+        >
+          {(isAllowed) => (
+            <Field className="mb-4">
+              <FieldLabel>Gateway</FieldLabel>
+              {isAllowed ? (
+                <GatewayPicker
+                  isDisabled={!isAllowed}
+                  value={{ gatewayId: gatewayId ?? null, gatewayPoolId: gatewayPoolId ?? null }}
+                  onChange={({ gatewayId: newGwId, gatewayPoolId: newPoolId }) => {
+                    setValue("gatewayId", newGwId, { shouldDirty: true });
+                    setValue("gatewayPoolId", newPoolId, { shouldDirty: true });
+                  }}
+                />
+              ) : (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div>
+                      <GatewayPicker
+                        isDisabled={!isAllowed}
+                        value={{
+                          gatewayId: gatewayId ?? null,
+                          gatewayPoolId: gatewayPoolId ?? null
+                        }}
+                        onChange={({ gatewayId: newGwId, gatewayPoolId: newPoolId }) => {
+                          setValue("gatewayId", newGwId, { shouldDirty: true });
+                          setValue("gatewayPoolId", newPoolId, { shouldDirty: true });
+                        }}
+                      />
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    Restricted access. You don&apos;t have permission to attach gateways to
+                    resources.
+                  </TooltipContent>
+                </Tooltip>
+              )}
+            </Field>
+          )}
+        </OrgPermissionCan>
         <Controller
           name="credentials.serverUrl"
           control={control}
@@ -186,8 +242,44 @@ export const ChefConnectionForm = ({ appConnection, onSubmit }: Props) => {
                   </TooltipContent>
                 </Tooltip>
               </FieldLabel>
-              <SecretInput value={value} onChange={(e) => onChange(e.target.value)} />
-              <FieldError errors={[error]} />
+              <SecretInput
+                aria-describedby={error ? "private-key-error" : undefined}
+                id="private-key"
+                isError={Boolean(error)}
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+              />
+              <FieldError id="private-key-error" errors={[error]} />
+            </Field>
+          )}
+        />
+        <Controller
+          name="credentials.dataBagSecret"
+          control={control}
+          shouldUnregister
+          render={({ field: { value, onChange }, fieldState: { error } }) => (
+            <Field className="mb-4">
+              <FieldLabel htmlFor="data-bag-secret">
+                Data Bag Secret (optional)
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Info />
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-sm">
+                    The contents of your encrypted_data_bag_secret file. Needed for syncs that
+                    encrypt secrets or read an encrypted data bag item. Enter it again whenever you
+                    update these credentials.
+                  </TooltipContent>
+                </Tooltip>
+              </FieldLabel>
+              <SecretInput
+                aria-describedby={error ? "data-bag-secret-error" : undefined}
+                id="data-bag-secret"
+                isError={Boolean(error)}
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+              />
+              <FieldError id="data-bag-secret-error" errors={[error]} />
             </Field>
           )}
         />

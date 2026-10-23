@@ -1,9 +1,11 @@
 import { createPrivateKey, X509Certificate } from "node:crypto";
+import { isIP } from "node:net";
 
 import ldapjs from "@infisical/ldapjs";
 
 import { BadRequestError } from "@app/lib/errors";
 import { logger } from "@app/lib/logger";
+import { stripIpv6Brackets } from "@app/lib/tls";
 
 import { TLDAPConfig, TTestLDAPConfigDTO } from "./ldap-config-types";
 
@@ -62,7 +64,8 @@ export const buildLdapTlsOptions = (cfg: TLdapTlsConfigInput) => {
   // changing TLS handshake behavior for existing non-mTLS configs.
   if (cfg.clientCertificate || cfg.clientKeyCertificate) {
     try {
-      tlsOptions.servername = new URL(cfg.url).hostname;
+      const { hostname } = new URL(cfg.url);
+      if (!isIP(stripIpv6Brackets(hostname))) tlsOptions.servername = hostname;
     } catch {
       // Malformed URL — connection itself will surface the error.
     }
@@ -107,6 +110,24 @@ export const testLDAPConfig = async (ldapConfig: TTestLDAPConfigDTO): Promise<bo
 };
 
 /**
+ * Extract the value of the first CN RDN from an LDAP DN string.
+ * RFC 4514 attribute types are case-insensitive.
+ *
+ * Expects the ldapjs DN.toString() serialization, which hex-escapes commas
+ * inside values (\2c), so splitting on "," cannot cut a value in half. A raw
+ * RFC 4514 string using the alternative `\,` escape form would be split
+ * mid-value; do not pass DNs from other sources.
+ */
+export const extractCnFromDn = (dn: string): string | undefined => {
+  const cnRdn = dn
+    .split(",")
+    .map((rdn) => rdn.trim())
+    .find((rdn) => rdn.slice(0, 3).toLowerCase() === "cn=");
+
+  return cnRdn?.substring(3);
+};
+
+/**
  * Search for groups in the LDAP server
  * @param ldapConfig - The LDAP configuration to use
  * @param filter - The filter to use when searching for groups
@@ -143,12 +164,9 @@ export const searchGroups = async (
 
         res.on("searchEntry", (entry) => {
           const dn = entry.dn.toString();
-          const cnStartIndex = dn.indexOf("cn=");
+          const cn = extractCnFromDn(dn);
 
-          if (cnStartIndex !== -1) {
-            const valueStartIndex = cnStartIndex + 3;
-            const commaIndex = dn.indexOf(",", valueStartIndex);
-            const cn = dn.substring(valueStartIndex, commaIndex === -1 ? undefined : commaIndex);
+          if (cn !== undefined) {
             groups.push({ dn, cn });
           }
         });

@@ -3,11 +3,16 @@
  */
 
 const PKI_DOCS_BASE_URL = "https://infisical.com/docs/documentation/platform/pki";
+const APP_CONNECTIONS_DOCS_BASE_URL = "https://infisical.com/docs/integrations/app-connections";
 
 export const PkiDocsUrls = {
+  appConnections: {
+    microsoftIntune: `${APP_CONNECTIONS_DOCS_BASE_URL}/microsoft-intune`
+  },
+
   // Overview
   overview: `${PKI_DOCS_BASE_URL}/overview`,
-  gettingStarted: `${PKI_DOCS_BASE_URL}/getting-started`,
+  gettingStarted: `${PKI_DOCS_BASE_URL}/overview`,
   migration: `${PKI_DOCS_BASE_URL}/migration`,
 
   // Quick starts
@@ -26,6 +31,7 @@ export const PkiDocsUrls = {
     policies: `${PKI_DOCS_BASE_URL}/settings/policies`,
     profiles: `${PKI_DOCS_BASE_URL}/settings/profiles`,
     certificateCleanup: `${PKI_DOCS_BASE_URL}/settings/certificate-cleanup`,
+    alerts: `${PKI_DOCS_BASE_URL}/applications/alerting/overview`,
     hsmConnectors: `${PKI_DOCS_BASE_URL}/settings/hsm-connectors`
   },
 
@@ -33,6 +39,7 @@ export const PkiDocsUrls = {
   applications: {
     overview: `${PKI_DOCS_BASE_URL}/applications/overview`,
     certificates: `${PKI_DOCS_BASE_URL}/applications/certificates`,
+    certificateRenewal: `${PKI_DOCS_BASE_URL}/applications/certificate-renewal`,
     approvals: `${PKI_DOCS_BASE_URL}/applications/approvals`,
     enrollment: {
       overview: `${PKI_DOCS_BASE_URL}/applications/enrollment-methods/overview`,
@@ -55,6 +62,8 @@ export const PkiDocsUrls = {
       azureKeyVault: `${PKI_DOCS_BASE_URL}/applications/certificate-syncs/azure-key-vault`,
       cloudflare: `${PKI_DOCS_BASE_URL}/applications/certificate-syncs/cloudflare-custom-certificate`,
       netscaler: `${PKI_DOCS_BASE_URL}/applications/certificate-syncs/netscaler`,
+      paloAltoNetworks: `${PKI_DOCS_BASE_URL}/applications/certificate-syncs/palo-alto-networks`,
+      paloAltoNetworksSslTlsProfile: `${PKI_DOCS_BASE_URL}/applications/certificate-syncs/palo-alto-networks-ssl-tls-profile`,
       chef: `${PKI_DOCS_BASE_URL}/applications/certificate-syncs/chef`
     }
   },

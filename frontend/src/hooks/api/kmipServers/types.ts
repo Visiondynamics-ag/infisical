@@ -5,7 +5,6 @@ export type TKmipServerAuthMethodView =
       method: "aws";
       config: {
         id: string;
-        stsEndpoint: string;
         allowedPrincipalArns: string;
         allowedAccountIds: string;
         createdAt: string;
@@ -49,7 +48,6 @@ export type TCreateKmipServerDTO = {
   authMethod:
     | {
         method: "aws";
-        stsEndpoint: string;
         allowedPrincipalArns: string;
         allowedAccountIds: string;
       }
@@ -59,12 +57,11 @@ export type TCreateKmipServerDTO = {
 export type TUpdateKmipServerDTO = {
   kmipServerId: string;
   hostnamesOrIps?: string;
-  ttl?: string;
+  ttl?: string | null;
   keyAlgorithm?: CertKeyAlgorithm;
   authMethod?:
     | {
         method: "aws";
-        stsEndpoint: string;
         allowedPrincipalArns: string;
         allowedAccountIds: string;
       }
